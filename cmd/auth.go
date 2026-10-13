@@ -184,9 +184,9 @@ func statusRun(cmd *cobra.Command, args []string) {
 }
 
 func tokenRun(cmd *cobra.Command, args []string) {
-	_, item := selectTea()
+	key, item := selectTea()
 	if item.Token == "" {
-		log.Fatal("no token stored; run: gh tea auth login")
+		log.Fatalf("tea %s is not logged in; run: gh tea auth login --use %s", key, key)
 	}
 	fmt.Println(item.Token)
 }

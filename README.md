@@ -41,7 +41,9 @@ tea:
 default: myhost
 ```
 
-Manage entries with the host commands below. The entry named in `default` is used when a command does not select one; override per invocation with `--use <name>`. Tokens are never printed by `list` or `status`.
+Manage entries with the host commands below. Tea selection for commands that use a host is explicit `--use <name>` first, then a configured Gitea host matching a Git remote in the current directory, then the configured `default`. If multiple configured Gitea hosts match the current directory's remotes, selection is ambiguous and you must pass `--use`. Remote matching uses configured Gitea hosts only; GitHub remotes are not mapped to a Gitea host. The entry named in `default` is used when no explicit or matching host is available.
+
+For authenticated repository operations, `--repo/-R <owner/name>` overrides repository inference. Repository inference uses only matching configured Gitea remotes; it does not map GitHub remotes. These operations require a repository and an access token for the selected Tea. Host-only authentication commands do not require a repository or token to select a Tea. Tokens are never printed by `list` or `status`.
 
 ## Commands
 
@@ -57,7 +59,7 @@ Manage entries with the host commands below. The entry named in `default` is use
 | `gh tea default [<name>]` | Show or set the default host |
 | `gh tea remove <name>` | Remove a host from the list |
 
-Global flags: `--config/-c <file>` (config file), `--use <name>` (choose a Tea for this invocation), `--debug/-d` (debug logging).
+Global flags: `--config/-c <file>` (config file), `--use <name>` (choose a Tea for this invocation), `--repo/-R <owner/name>` (override repository inference for repository operations), `--debug/-d` (debug logging).
 
 ### Roadmap (Tier 1 / Tier 2, not yet implemented)
 

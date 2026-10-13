@@ -32,11 +32,13 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/InsulateJustf/gh-tea/pkg/config"
+	"github.com/InsulateJustf/gh-tea/pkg/tea"
 )
 
 var (
 	cfg        config.Config
 	useFlag    string
+	repoFlag   string
 	configFlag string
 
 	rootCmd = &cobra.Command{
@@ -53,6 +55,7 @@ then use "gh tea issue ..." and "gh tea repo ..." like their gh counterparts.`,
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&configFlag, "config", "c", "", "config file (default "+config.DefaultPath+")")
 	rootCmd.PersistentFlags().StringVar(&useFlag, "use", "", "use the Tea <name> for this invocation")
+	rootCmd.PersistentFlags().StringVarP(&repoFlag, "repo", "R", "", "select repository <owner>/<name>")
 	rootCmd.PersistentFlags().BoolVarP(&debugFlag, "debug", "d", false, "debug logging")
 	cobra.OnInitialize(initConfig, initLog)
 }
@@ -104,24 +107,13 @@ func saveConfig() {
 	}
 }
 
-// selectTea picks the Tea for this invocation: explicit --use wins, then the
-// configured default. A miss is always a hard error, never a silent fallback.
+// selectTea resolves the host selected for an authentication command.
 func selectTea() (config.TeaName, config.TeaItem) {
-	if useFlag != "" {
-		item, ok := cfg.Tea[config.TeaName(useFlag)]
-		if !ok {
-			log.Fatalf("no such tea name: %s", useFlag)
-		}
-		return config.TeaName(useFlag), item
+	item, err := tea.ResolveTea(cfg, useFlag)
+	if err != nil {
+		log.Fatal(err)
 	}
-	if cfg.Default == "" {
-		log.Fatal("no tea configured; run: gh tea new <name> <host>")
-	}
-	item, ok := cfg.Tea[cfg.Default]
-	if !ok {
-		log.Fatalf("default tea %q is missing from the config", cfg.Default)
-	}
-	return cfg.Default, item
+	return config.TeaName(item.Name), item
 }
 
 // markDefault marks the first registered Tea as default if none is set yet.
