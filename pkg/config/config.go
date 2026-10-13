@@ -1,5 +1,5 @@
 // Package config stores the multi-host Tea configuration
-// (see GLOSSARY.md: Tea, Host, Default, Token, ClientID).
+// (see docs/GLOSSARY.md: Tea, Host, Default, Token, ClientID).
 package config
 
 import (

@@ -6,7 +6,7 @@
 
 ### Issue tracker
 
-Issues 存放在私有 fork 仓库 `InsulateJustf/gh-tea` 的 GitHub Issues（`gh` CLI，显式 `-R InsulateJustf/gh-tea`）。See `docs/agents/issue-tracker.md`.
+Issues 存放在私有仓库 `InsulateJustf/gh-tea` 的 GitHub Issues（`gh` CLI，显式 `-R InsulateJustf/gh-tea`）。See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
@@ -14,4 +14,4 @@ Issues 存放在私有 fork 仓库 `InsulateJustf/gh-tea` 的 GitHub Issues（`g
 
 ### Domain docs
 
-Single-context：repo root `GLOSSARY.md` + `docs/adr/`。See `docs/agents/domain.md`.
+Single-context：`docs/GLOSSARY.md` + `docs/adr/`。See `docs/agents/domain.md`.

@@ -4,7 +4,7 @@ Engineering skills 探索 codebase 时，应如何消费这个 repo 的 domain d
 
 ## 探索前先读取这些
 
-- repo 根目录的 **`GLOSSARY.md`**
+- **`docs/GLOSSARY.md`**（本 repo 的 domain docs 不放在 repo 根目录）
 - **`docs/adr/`**：读取与你即将处理区域相关的 ADRs。
 
 如果这些文件不存在，**静默继续**。不要标记缺失；不要提前建议创建。`/domain-modeling` skill（经由 `/grill-with-docs` 和 `/improve-codebase-architecture` 调用）会在 terms 或 decisions 实际被解决时懒创建它们。
@@ -15,16 +15,17 @@ Single-context repo：
 
 ```
 /
-├── GLOSSARY.md
-├── docs/adr/
-│   ├── 0001-event-sourced-orders.md
-│   └── 0002-postgres-for-write-model.md
+├── docs/
+│   ├── GLOSSARY.md
+│   └── adr/
+│       ├── 0001-…​.md
+│       └── 0002-…​.md
 └── cmd/ … pkg/ …
 ```
 
 ## 使用 glossary 的词汇
 
-当你的输出命名某个 domain concept 时（issue title、refactor proposal、hypothesis、test name），使用 `GLOSSARY.md` 中定义的 term。不要漂移到 glossary 明确避免的 synonyms。
+当你的输出命名某个 domain concept 时（issue title、refactor proposal、hypothesis、test name），使用 `docs/GLOSSARY.md` 中定义的 term。不要漂移到 glossary 明确避免的 synonyms。
 
 如果你需要的概念还不在 glossary 中，这是一个信号：要么你正在发明项目没有使用的语言（重新考虑），要么确实存在缺口（为 `/domain-modeling` 记录）。
 
