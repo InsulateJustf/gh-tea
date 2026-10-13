@@ -58,14 +58,23 @@ For authenticated repository operations, `--repo/-R <owner/name>` overrides repo
 | `gh tea list` | List registered hosts (like `git remote -v`) |
 | `gh tea default [<name>]` | Show or set the default host |
 | `gh tea remove <name>` | Remove a host from the list |
+| `gh tea issue list` | List repository issues; filter with `--state`, repeatable `--label`, `--assignee`, `--author`, `--mention`, `--search/-S`, and `--limit` |
+| `gh tea issue create` | Create an issue with `--title`, `--body`, `--body-file/-f`, `--label`, `--assignee`, or `--milestone`; without `--title`, prompts for a title and, if no body was supplied, a body |
+| `gh tea issue view <number>` | View an issue; `--comments`, `--web`, and `--json <fields>` are supported |
+| `gh tea issue edit <number>` | Edit issue title/body/milestone, add or remove labels, and add or remove assignees |
+| `gh tea issue close <number>` | Close an issue |
+| `gh tea issue reopen <number>` | Reopen an issue |
+| `gh tea issue comment <number>` | Add a comment with `--body`, or prompt in a terminal |
+| `gh tea issue status` | Show open issues assigned to, created by, or mentioning the authenticated user |
+
+Issue JSON fields: `number,title,state,url,createdAt,updatedAt,closedAt,author.login,labels[].name,assignees[].login,milestone.title,body`. Unsupported flags, including `--project` and `--template/-t`, are rejected rather than ignored. `--jq` and template rendering are not implemented.
 
 Global flags: `--config/-c <file>` (config file), `--use <name>` (choose a Tea for this invocation), `--repo/-R <owner/name>` (override repository inference for repository operations), `--debug/-d` (debug logging).
 
-### Roadmap (Tier 1 / Tier 2, not yet implemented)
+### Planned commands
 
-The target gh-compat surface, per [ADR 0002](docs/adr/0002-per-host-client-id.md):
+Tier 2 repo commands are planned; they are not implemented yet:
 
-- **Tier 1 — issue**: `gh tea issue list/create/view/edit/close/reopen/comment/status`
 - **Tier 2 — repo**: `gh tea repo list/view/create/delete/edit/fork/rename/clone/browse`
 
 ## OAuth app registration
