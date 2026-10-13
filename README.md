@@ -41,7 +41,7 @@ tea:
 default: myhost
 ```
 
-Manage entries with the host commands below. Tea selection for commands that use a host is explicit `--use <name>` first, then a configured Gitea host matching a Git remote in the current directory, then the configured `default`. If multiple configured Gitea hosts match the current directory's remotes, selection is ambiguous and you must pass `--use`. Remote matching uses configured Gitea hosts only; GitHub remotes are not mapped to a Gitea host. The entry named in `default` is used when no explicit or matching host is available.
+Manage entries with the host commands below. Tea selection for commands that use a host is explicit `--use <name>` first, then a configured Gitea host matching a Git remote in the current directory, then the configured `default`. If multiple configured Gitea hosts match the current directory's remotes, selection is ambiguous and you must pass `--use`. Remote matching uses configured Gitea hosts only; GitHub remotes are not mapped to a Gitea host. SSH remotes using bracketed IPv6 scp-style addresses (for example, `git@[2001:db8::1]:owner/repo.git`) are supported. The entry named in `default` is used when no explicit or matching host is available.
 
 For authenticated repository operations, `--repo/-R <owner/name>` overrides repository inference. Repository inference uses only matching configured Gitea remotes; it does not map GitHub remotes. These operations require a repository and an access token for the selected Tea. Host-only authentication commands do not require a repository or token to select a Tea. Tokens are never printed by `list` or `status`.
 
@@ -58,14 +58,24 @@ For authenticated repository operations, `--repo/-R <owner/name>` overrides repo
 | `gh tea list` | List registered hosts (like `git remote -v`) |
 | `gh tea default [<name>]` | Show or set the default host |
 | `gh tea remove <name>` | Remove a host from the list |
+| `gh tea issue list` | List repository issues; filter with `--state`, repeatable `--label`, `--assignee`, `--author`, `--mention`, `--search/-S`, and `--limit` |
+| `gh tea issue create` | Create an issue with `--title`, `--body`, `--body-file/-f`, `--label`, `--assignee`, or `--milestone`; prompts for missing title/body in a terminal |
+| `gh tea issue view <number>` | View an issue; `--comments`, `--web`, and `--json <fields>` are supported |
+| `gh tea issue edit <number>` | Edit issue title/body/milestone, add or remove labels, and add or remove assignees |
+| `gh tea issue close <number>` | Close an issue |
+| `gh tea issue reopen <number>` | Reopen an issue |
+| `gh tea issue comment <number>` | Add a comment with `--body`, or prompt in a terminal |
+| `gh tea issue status` | Show open issues assigned to, created by, or mentioning the authenticated user |
+
+Issue JSON fields: `number,title,state,url,createdAt,updatedAt,closedAt,author.login,labels[].name,assignees[].login,milestone.title,body`. Unsupported flags, including `--project` and `--template/-t`, are rejected rather than ignored. `--jq` and template rendering are not implemented.
+`issue list --json` emits an array; `issue view --json` emits one issue object. In a non-interactive run, `issue create` requires `--title`; if no body flag/file is supplied, the body is empty.
 
 Global flags: `--config/-c <file>` (config file), `--use <name>` (choose a Tea for this invocation), `--repo/-R <owner/name>` (override repository inference for repository operations), `--debug/-d` (debug logging).
 
-### Roadmap (Tier 1 / Tier 2, not yet implemented)
+### Planned commands
 
-The target gh-compat surface, per [ADR 0002](docs/adr/0002-per-host-client-id.md):
+Tier 2 repo commands are planned; they are not implemented yet:
 
-- **Tier 1 — issue**: `gh tea issue list/create/view/edit/close/reopen/comment/status`
 - **Tier 2 — repo**: `gh tea repo list/view/create/delete/edit/fork/rename/clone/browse`
 
 ## OAuth app registration

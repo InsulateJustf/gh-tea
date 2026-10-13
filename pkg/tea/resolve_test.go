@@ -65,6 +65,16 @@ func TestResolvePrecedenceAndErrors(t *testing.T) {
 	}{
 		{name: "https normalized host", remote: "origin https://TEA.EXAMPLE/alice/project.git (fetch)", wantTea: "work", wantRepo: "alice/project"},
 		{name: "ssh URL with independent port", remote: "origin ssh://git@tea.example:2222/alice/project.git (fetch)", wantTea: "work", wantRepo: "alice/project"},
+		{name: "IPv6 scp remote selects Tea and repo", remote: "origin git@[2001:db8::1]:alice/project.git (fetch)", wantTea: "work", wantRepo: "alice/project", change: func(c *config.Config) {
+			i := c.Tea["work"]
+			i.Host = "https://[2001:db8::1]"
+			c.Tea["work"] = i
+		}},
+		{name: "explicit repo preserves IPv6 remote-selected Tea", remote: "origin git@[2001:db8::1]:alice/project.git (fetch)", repo: "bob/override", wantTea: "work", wantRepo: "bob/override", change: func(c *config.Config) {
+			i := c.Tea["work"]
+			i.Host = "https://[2001:db8::1]"
+			c.Tea["work"] = i
+		}},
 		{name: "http with web port and subpath", remote: "origin http://TEA.EXAMPLE:3000/gitea/alice/project.git (fetch)", wantTea: "work", wantRepo: "alice/project", change: func(c *config.Config) {
 			i := c.Tea["work"]
 			i.Host = "http://tea.example:3000/gitea/"
@@ -124,14 +134,20 @@ func TestResolveTeaWithoutRepositoryOrToken(t *testing.T) {
 	original := readGitRemotes
 	t.Cleanup(func() { readGitRemotes = original })
 	readGitRemotes = func() ([]byte, error) {
-		return []byte("origin git@tea.example:alice/project.git (fetch)\nsecond git@tea.example:bob/other.git (fetch)"), nil
+		return []byte("origin git@[2001:db8::1]:alice/project.git (fetch)"), nil
 	}
-	cfg := config.Config{Tea: config.Tea{"work": {Host: "https://tea.example"}}}
+	cfg := config.Config{
+		Default: "fallback",
+		Tea: config.Tea{
+			"fallback": {Host: "https://fallback.example"},
+			"work":     {Host: "https://[2001:db8::1]"},
+		},
+	}
 	item, err := ResolveTea(cfg, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if item.Name != "work" || item.Host != "https://tea.example" || item.Token != "" {
+	if item.Name != "work" || item.Host != "https://[2001:db8::1]" || item.Token != "" {
 		t.Fatalf("host-only selection = %+v", item)
 	}
 }
