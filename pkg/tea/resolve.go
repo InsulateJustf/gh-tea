@@ -139,7 +139,18 @@ func splitRepo(repo string) (string, string, error) {
 func parseRemote(raw string) *url.URL {
 	if !strings.Contains(raw, "://") {
 		// Git's scp-like SSH syntax: [user@]host:owner/repo.git.
-		host, path, ok := strings.Cut(raw, ":")
+		host, path, ok := "", "", false
+		hostStart := strings.LastIndex(raw, "@") + 1
+		if hostStart < len(raw) && raw[hostStart] == '[' {
+			if end := strings.IndexByte(raw[hostStart:], ']'); end >= 0 {
+				separator := hostStart + end + 1
+				if separator < len(raw) && raw[separator] == ':' {
+					host, path, ok = raw[:separator], raw[separator+1:], true
+				}
+			}
+		} else {
+			host, path, ok = strings.Cut(raw, ":")
+		}
 		if !ok || strings.Contains(host, "/") {
 			return nil
 		}
