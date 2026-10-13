@@ -16,8 +16,8 @@ import (
 	"code.gitea.io/sdk/gitea"
 	"github.com/cli/go-gh/v2/pkg/browser"
 	"github.com/cli/go-gh/v2/pkg/prompter"
-	"github.com/spf13/cobra"
 	"github.com/cli/go-gh/v2/pkg/term"
+	"github.com/spf13/cobra"
 
 	"github.com/InsulateJustf/gh-tea/pkg/tea"
 )
@@ -25,18 +25,18 @@ import (
 const issueJSONFields = "number,title,state,url,createdAt,updatedAt,closedAt,author.login,labels[].name,assignees[].login,milestone.title,body"
 
 var (
-	issueListState, issueListAssignee, issueListAuthor, issueListMention, issueListSearch string
-	issueListLabels []string
-	issueListLimit int
-	issueListJSON string
-	issueListWeb bool
-	issueCreateTitle, issueCreateBody, issueCreateBodyFile, issueCreateMilestone string
-	issueCreateLabels, issueCreateAssignees []string
-	issueViewComments, issueViewWeb bool
-	issueViewJSON string
-	issueEditTitle, issueEditBody, issueEditBodyFile, issueEditMilestone string
+	issueListState, issueListAssignee, issueListAuthor, issueListMention, issueListSearch      string
+	issueListLabels                                                                            []string
+	issueListLimit                                                                             int
+	issueListJSON                                                                              string
+	issueListWeb                                                                               bool
+	issueCreateTitle, issueCreateBody, issueCreateBodyFile, issueCreateMilestone               string
+	issueCreateLabels, issueCreateAssignees                                                    []string
+	issueViewComments, issueViewWeb                                                            bool
+	issueViewJSON                                                                              string
+	issueEditTitle, issueEditBody, issueEditBodyFile, issueEditMilestone                       string
 	issueEditAddLabels, issueEditRemoveLabels, issueEditAddAssignees, issueEditRemoveAssignees []string
-	issueCommentBody string
+	issueCommentBody                                                                           string
 )
 
 func init() {
@@ -72,6 +72,7 @@ func init() {
 	issueEditCmd.Flags().StringVar(&issueEditTitle, "title", "", "set issue title")
 	issueEditCmd.Flags().StringVar(&issueEditBody, "body", "", "set issue body")
 	issueEditCmd.Flags().StringVarP(&issueEditBodyFile, "body-file", "f", "", "read issue body from a file (use - for stdin)")
+	issueEditCmd.Flags().StringVarP(&issueEditBodyFile, "body-file-short-F", "F", "", "read issue body from a file (use - for stdin)")
 	issueEditCmd.Flags().Lookup("body-file-short-F").Hidden = true
 	issueEditCmd.Flags().StringArrayVar(&issueEditAddLabels, "add-label", nil, "add label (repeatable)")
 	issueEditCmd.Flags().StringArrayVar(&issueEditRemoveLabels, "remove-label", nil, "remove label (repeatable)")
@@ -82,15 +83,15 @@ func init() {
 }
 
 var (
-	issueCmd = &cobra.Command{Use: "issue", Short: "Work with issues", Args: cobra.NoArgs}
-	issueListCmd = &cobra.Command{Use: "list", Short: "List issues in a repository", Args: cobra.NoArgs, RunE: issueListRun}
-	issueCreateCmd = &cobra.Command{Use: "create", Short: "Create an issue", Args: cobra.NoArgs, RunE: issueCreateRun}
-	issueViewCmd = &cobra.Command{Use: "view <number>", Short: "View an issue", Args: cobra.ExactArgs(1), RunE: issueViewRun}
-	issueEditCmd = &cobra.Command{Use: "edit <number>", Short: "Edit an issue", Args: cobra.ExactArgs(1), RunE: issueEditRun}
-	issueCloseCmd = &cobra.Command{Use: "close <number>", Short: "Close an issue", Args: cobra.ExactArgs(1), RunE: issueStateRun(gitea.StateClosed)}
-	issueReopenCmd = &cobra.Command{Use: "reopen <number>", Short: "Reopen an issue", Args: cobra.ExactArgs(1), RunE: issueStateRun(gitea.StateOpen)}
+	issueCmd        = &cobra.Command{Use: "issue", Short: "Work with issues", Args: cobra.NoArgs}
+	issueListCmd    = &cobra.Command{Use: "list", Short: "List issues in a repository", Args: cobra.NoArgs, RunE: issueListRun}
+	issueCreateCmd  = &cobra.Command{Use: "create", Short: "Create an issue", Args: cobra.NoArgs, RunE: issueCreateRun}
+	issueViewCmd    = &cobra.Command{Use: "view <number>", Short: "View an issue", Args: cobra.ExactArgs(1), RunE: issueViewRun}
+	issueEditCmd    = &cobra.Command{Use: "edit <number>", Short: "Edit an issue", Args: cobra.ExactArgs(1), RunE: issueEditRun}
+	issueCloseCmd   = &cobra.Command{Use: "close <number>", Short: "Close an issue", Args: cobra.ExactArgs(1), RunE: issueStateRun(gitea.StateClosed)}
+	issueReopenCmd  = &cobra.Command{Use: "reopen <number>", Short: "Reopen an issue", Args: cobra.ExactArgs(1), RunE: issueStateRun(gitea.StateOpen)}
 	issueCommentCmd = &cobra.Command{Use: "comment <number>", Short: "Add a comment to an issue", Args: cobra.ExactArgs(1), RunE: issueCommentRun}
-	issueStatusCmd = &cobra.Command{Use: "status", Short: "Show issues assigned to, created by, or mentioning you", Args: cobra.NoArgs, RunE: issueStatusRun}
+	issueStatusCmd  = &cobra.Command{Use: "status", Short: "Show issues assigned to, created by, or mentioning you", Args: cobra.NoArgs, RunE: issueStatusRun}
 )
 
 func issueFlagError(command *cobra.Command, err error) error {
@@ -298,8 +299,14 @@ func issueCommentPages(client *gitea.Client, owner, repo string, index int64) ([
 
 func issueStateRun(state gitea.StateType) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
-		client, owner, repo, err := issueClient(); if err != nil { return err }
-		index, err := issueNumber(args[0]); if err != nil { return err }
+		client, owner, repo, err := issueClient()
+		if err != nil {
+			return err
+		}
+		index, err := issueNumber(args[0])
+		if err != nil {
+			return err
+		}
 		_, _, err = client.EditIssue(owner, repo, index, gitea.EditIssueOption{State: &state})
 		return err
 	}
@@ -388,27 +395,50 @@ func issueEditRun(cmd *cobra.Command, args []string) error {
 }
 
 func issueCommentRun(cmd *cobra.Command, args []string) error {
-	client, owner, repo, err := issueClient(); if err != nil { return err }
-	index, err := issueNumber(args[0]); if err != nil { return err }
+	client, owner, repo, err := issueClient()
+	if err != nil {
+		return err
+	}
+	index, err := issueNumber(args[0])
+	if err != nil {
+		return err
+	}
 	body := issueCommentBody
 	if !cmd.Flags().Changed("body") {
-		if !interactiveInput() { return errors.New("issue comment requires --body or a TTY for prompts") }
-		body, err = prompter.New(os.Stdin, os.Stdout, os.Stderr).Input("Comment", ""); if err != nil { return err }
+		if !interactiveInput() {
+			return errors.New("issue comment requires --body or a TTY for prompts")
+		}
+		body, err = prompter.New(os.Stdin, os.Stdout, os.Stderr).Input("Comment", "")
+		if err != nil {
+			return err
+		}
 	}
 	_, _, err = client.CreateIssueComment(owner, repo, index, gitea.CreateIssueCommentOption{Body: body})
 	return err
 }
 
 func issueStatusRun(cmd *cobra.Command, _ []string) error {
-	client, owner, repo, err := issueClient(); if err != nil { return err }
-	viewer, _, err := client.GetMyUserInfo(); if err != nil { return err }
+	client, owner, repo, err := issueClient()
+	if err != nil {
+		return err
+	}
+	viewer, _, err := client.GetMyUserInfo()
+	if err != nil {
+		return err
+	}
 	for _, section := range []struct {
 		title  string
 		filter func(string) gitea.ListIssueOption
 	}{
-		{"Assigned to you", func(user string) gitea.ListIssueOption { return gitea.ListIssueOption{State: gitea.StateOpen, AssignedBy: user} }},
-		{"Created by you", func(user string) gitea.ListIssueOption { return gitea.ListIssueOption{State: gitea.StateOpen, CreatedBy: user} }},
-		{"Mentioning you", func(user string) gitea.ListIssueOption { return gitea.ListIssueOption{State: gitea.StateOpen, MentionedBy: user} }},
+		{"Assigned to you", func(user string) gitea.ListIssueOption {
+			return gitea.ListIssueOption{State: gitea.StateOpen, AssignedBy: user}
+		}},
+		{"Created by you", func(user string) gitea.ListIssueOption {
+			return gitea.ListIssueOption{State: gitea.StateOpen, CreatedBy: user}
+		}},
+		{"Mentioning you", func(user string) gitea.ListIssueOption {
+			return gitea.ListIssueOption{State: gitea.StateOpen, MentionedBy: user}
+		}},
 	} {
 		items, err := issuePages(client, owner, repo, section.filter(viewer.UserName), 30)
 		if err != nil {
@@ -641,4 +671,3 @@ func sortedKeys(values map[string]bool) []string {
 	sort.Strings(result)
 	return result
 }
-
