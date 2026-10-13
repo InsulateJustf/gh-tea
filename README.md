@@ -59,7 +59,7 @@ For authenticated repository operations, `--repo/-R <owner/name>` overrides repo
 | `gh tea default [<name>]` | Show or set the default host |
 | `gh tea remove <name>` | Remove a host from the list |
 | `gh tea issue list` | List repository issues; filter with `--state`, repeatable `--label`, `--assignee`, `--author`, `--mention`, `--search/-S`, and `--limit` |
-| `gh tea issue create` | Create an issue with `--title`, `--body`, `--body-file/-f`, `--label`, `--assignee`, or `--milestone`; without `--title`, prompts for a title and, if no body was supplied, a body |
+| `gh tea issue create` | Create an issue with `--title`, `--body`, `--body-file/-f`, `--label`, `--assignee`, or `--milestone`; prompts for missing title/body in a terminal |
 | `gh tea issue view <number>` | View an issue; `--comments`, `--web`, and `--json <fields>` are supported |
 | `gh tea issue edit <number>` | Edit issue title/body/milestone, add or remove labels, and add or remove assignees |
 | `gh tea issue close <number>` | Close an issue |
@@ -68,6 +68,7 @@ For authenticated repository operations, `--repo/-R <owner/name>` overrides repo
 | `gh tea issue status` | Show open issues assigned to, created by, or mentioning the authenticated user |
 
 Issue JSON fields: `number,title,state,url,createdAt,updatedAt,closedAt,author.login,labels[].name,assignees[].login,milestone.title,body`. Unsupported flags, including `--project` and `--template/-t`, are rejected rather than ignored. `--jq` and template rendering are not implemented.
+`issue list --json` emits an array; `issue view --json` emits one issue object. In a non-interactive run, `issue create` requires `--title`; if no body flag/file is supplied, the body is empty.
 
 Global flags: `--config/-c <file>` (config file), `--use <name>` (choose a Tea for this invocation), `--repo/-R <owner/name>` (override repository inference for repository operations), `--debug/-d` (debug logging).
 
