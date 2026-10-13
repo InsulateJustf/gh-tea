@@ -17,6 +17,7 @@ import (
 	"github.com/cli/go-gh/v2/pkg/browser"
 	"github.com/cli/go-gh/v2/pkg/prompter"
 	"github.com/spf13/cobra"
+	"github.com/cli/go-gh/v2/pkg/term"
 
 	"github.com/InsulateJustf/gh-tea/pkg/tea"
 )
@@ -69,8 +70,8 @@ func init() {
 	issueViewCmd.Flags().StringVar(&issueViewJSON, "json", "", "output selected fields as JSON")
 
 	issueEditCmd.Flags().StringVar(&issueEditTitle, "title", "", "set issue title")
+	issueEditCmd.Flags().StringVar(&issueEditBody, "body", "", "set issue body")
 	issueEditCmd.Flags().StringVarP(&issueEditBodyFile, "body-file", "f", "", "read issue body from a file (use - for stdin)")
-	issueEditCmd.Flags().StringVarP(&issueEditBodyFile, "body-file-short-F", "F", "", "read issue body from a file (use - for stdin)")
 	issueEditCmd.Flags().Lookup("body-file-short-F").Hidden = true
 	issueEditCmd.Flags().StringArrayVar(&issueEditAddLabels, "add-label", nil, "add label (repeatable)")
 	issueEditCmd.Flags().StringArrayVar(&issueEditRemoveLabels, "remove-label", nil, "remove label (repeatable)")
@@ -130,8 +131,10 @@ func issueListRun(cmd *cobra.Command, _ []string) error {
 	if issueListWeb {
 		return issueBrowse(owner, repo, 0)
 	}
+	var jsonFields []string
 	if issueListJSON != "" {
-		if err := validateIssueJSONFields(issueListJSON); err != nil {
+		jsonFields = strings.Split(issueListJSON, ",")
+		if err := validateIssueJSONFields(jsonFields); err != nil {
 			return err
 		}
 	}
@@ -140,7 +143,7 @@ func issueListRun(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if issueListJSON != "" {
-		return writeIssueJSON(cmd, issues, issueListJSON)
+		return writeIssueJSON(cmd, issues, jsonFields, false)
 	}
 	for _, item := range issues {
 		fmt.Fprintf(cmd.OutOrStdout(), "%d\t%s\t%s\n", item.Index, item.State, item.Title)
@@ -188,19 +191,23 @@ func issueCreateRun(cmd *cobra.Command, _ []string) error {
 		}
 		issueCreateBody = body
 	}
-	if !cmd.Flags().Changed("title") {
-		if !interactiveInput() {
-			return errors.New("issue create requires --title or a TTY for prompts")
-		}
-		issueCreateTitle, err = prompter.New(os.Stdin, os.Stdout, os.Stderr).Input("Title", "")
+	needsTitle := !cmd.Flags().Changed("title")
+	needsBody := !cmd.Flags().Changed("body") && issueCreateBodyFile == ""
+	tty := interactiveInput()
+	if needsTitle && !tty {
+		return errors.New("issue create requires --title or a TTY for prompts")
+	}
+	p := prompter.New(os.Stdin, os.Stdout, os.Stderr)
+	if needsTitle {
+		issueCreateTitle, err = p.Input("Title", "")
 		if err != nil {
 			return err
 		}
-		if !cmd.Flags().Changed("body") && issueCreateBodyFile == "" {
-			issueCreateBody, err = prompter.New(os.Stdin, os.Stdout, os.Stderr).Input("Body", "")
-			if err != nil {
-				return err
-			}
+	}
+	if needsBody && tty {
+		issueCreateBody, err = p.Input("Body", "")
+		if err != nil {
+			return err
 		}
 	}
 	opt := gitea.CreateIssueOption{Title: issueCreateTitle, Body: issueCreateBody, Assignees: issueCreateAssignees}
@@ -236,8 +243,10 @@ func issueViewRun(cmd *cobra.Command, args []string) error {
 	if issueViewWeb {
 		return issueBrowse(owner, repo, index)
 	}
+	var jsonFields []string
 	if issueViewJSON != "" {
-		if err := validateIssueJSONFields(issueViewJSON); err != nil {
+		jsonFields = strings.Split(issueViewJSON, ",")
+		if err := validateIssueJSONFields(jsonFields); err != nil {
 			return err
 		}
 	}
@@ -246,7 +255,7 @@ func issueViewRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if issueViewJSON != "" {
-		return writeIssueJSON(cmd, []*gitea.Issue{item}, issueViewJSON)
+		return writeIssueJSON(cmd, []*gitea.Issue{item}, jsonFields, true)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "%s (%s)\n\n%s\n", item.Title, item.State, item.Body)
 	if issueViewComments {
@@ -359,7 +368,7 @@ func issueEditRun(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if len(issueEditRemoveLabels) > 0 {
-		labels, _, err := client.GetIssueLabels(owner, repo, index, gitea.ListLabelsOptions{ListOptions: gitea.ListOptions{Page: 1, PageSize: 50}})
+		labels, err := issueAttachedLabels(client, owner, repo, index)
 		if err != nil {
 			return err
 		}
@@ -427,8 +436,8 @@ func issueBrowse(owner, repo string, number int64) error {
 
 var issueHost string
 
-func validateIssueJSONFields(fields string) error {
-	for _, field := range strings.Split(fields, ",") {
+func validateIssueJSONFields(fields []string) error {
+	for _, field := range fields {
 		switch field {
 		case "number", "title", "state", "url", "createdAt", "updatedAt", "closedAt", "author.login", "labels[].name", "assignees[].login", "milestone.title", "body":
 		default:
@@ -438,63 +447,70 @@ func validateIssueJSONFields(fields string) error {
 	return nil
 }
 
-func writeIssueJSON(cmd *cobra.Command, issues []*gitea.Issue, fields string) error {
-	selected := strings.Split(fields, ",")
-	if err := validateIssueJSONFields(fields); err != nil {
-		return err
+func writeIssueJSON(cmd *cobra.Command, issues []*gitea.Issue, selected []string, single bool) error {
+	encoder := json.NewEncoder(cmd.OutOrStdout())
+	encoder.SetIndent("", "  ")
+	if single && len(issues) == 1 {
+		return encoder.Encode(projectIssueFields(issues[0], selected))
 	}
 	rows := make([]map[string]any, 0, len(issues))
 	for _, item := range issues {
-		row := issueJSONRow(item)
-		projection := make(map[string]any, len(selected))
-		for _, field := range selected {
-			switch field {
-			case "author.login":
-				projection["author"] = row["author"]
-			case "labels[].name":
-				projection["labels"] = row["labels"]
-			case "assignees[].login":
-				projection["assignees"] = row["assignees"]
-			case "milestone.title":
-				projection["milestone"] = row["milestone"]
-			default:
-				projection[field] = row[field]
-			}
-		}
-		rows = append(rows, projection)
+		rows = append(rows, projectIssueFields(item, selected))
 	}
-	encoder := json.NewEncoder(cmd.OutOrStdout())
-	encoder.SetIndent("", "  ")
 	return encoder.Encode(rows)
 }
 
-func issueJSONRow(item *gitea.Issue) map[string]any {
-	var closed any
-	if item.Closed != nil {
-		closed = item.Closed.Format(time.RFC3339)
+func projectIssueFields(item *gitea.Issue, fields []string) map[string]any {
+	projected := make(map[string]any, len(fields))
+	for _, field := range fields {
+		switch field {
+		case "number":
+			projected[field] = item.Index
+		case "title":
+			projected[field] = item.Title
+		case "state":
+			projected[field] = item.State
+		case "url":
+			projected[field] = item.HTMLURL
+		case "createdAt":
+			projected[field] = item.Created.Format(time.RFC3339)
+		case "updatedAt":
+			projected[field] = item.Updated.Format(time.RFC3339)
+		case "closedAt":
+			if item.Closed == nil {
+				projected[field] = nil
+			} else {
+				projected[field] = item.Closed.Format(time.RFC3339)
+			}
+		case "author.login":
+			if item.Poster == nil {
+				projected["author"] = nil
+			} else {
+				projected["author"] = map[string]string{"login": item.Poster.UserName}
+			}
+		case "labels[].name":
+			labels := make([]map[string]string, 0, len(item.Labels))
+			for _, label := range item.Labels {
+				labels = append(labels, map[string]string{"name": label.Name})
+			}
+			projected["labels"] = labels
+		case "assignees[].login":
+			assignees := make([]map[string]string, 0, len(item.Assignees))
+			for _, assignee := range item.Assignees {
+				assignees = append(assignees, map[string]string{"login": assignee.UserName})
+			}
+			projected["assignees"] = assignees
+		case "milestone.title":
+			if item.Milestone == nil {
+				projected["milestone"] = nil
+			} else {
+				projected["milestone"] = map[string]string{"title": item.Milestone.Title}
+			}
+		case "body":
+			projected[field] = item.Body
+		}
 	}
-	var author any
-	if item.Poster != nil {
-		author = map[string]any{"login": item.Poster.UserName}
-	}
-	labels := make([]map[string]string, 0, len(item.Labels))
-	for _, label := range item.Labels {
-		labels = append(labels, map[string]string{"name": label.Name})
-	}
-	assignees := make([]map[string]string, 0, len(item.Assignees))
-	for _, user := range item.Assignees {
-		assignees = append(assignees, map[string]string{"login": user.UserName})
-	}
-	var milestone any
-	if item.Milestone != nil {
-		milestone = map[string]any{"title": item.Milestone.Title}
-	}
-	return map[string]any{
-		"number": item.Index, "title": item.Title, "state": item.State, "url": item.HTMLURL,
-		"createdAt": item.Created.Format(time.RFC3339), "updatedAt": item.Updated.Format(time.RFC3339),
-		"closedAt": closed, "author": author, "labels": labels, "assignees": assignees,
-		"milestone": milestone, "body": item.Body,
-	}
+	return projected
 }
 
 func readIssueBody(path string) (string, error) {
@@ -516,8 +532,50 @@ func readIssueBody(path string) (string, error) {
 	return string(body), nil
 }
 
+func issueRepoLabels(client *gitea.Client, owner, repo string) ([]*gitea.Label, error) {
+	const pageSize = 50
+	var labels []*gitea.Label
+	for page := 1; ; {
+		items, response, err := client.ListRepoLabels(owner, repo, gitea.ListLabelsOptions{ListOptions: gitea.ListOptions{Page: page, PageSize: pageSize}})
+		if err != nil {
+			return nil, err
+		}
+		labels = append(labels, items...)
+		if len(items) == 0 || (response != nil && response.NextPage == 0 && len(items) < pageSize) {
+			break
+		}
+		if response != nil && response.NextPage > 0 {
+			page = response.NextPage
+		} else {
+			page++
+		}
+	}
+	return labels, nil
+}
+
+func issueAttachedLabels(client *gitea.Client, owner, repo string, index int64) ([]*gitea.Label, error) {
+	const pageSize = 50
+	var labels []*gitea.Label
+	for page := 1; ; {
+		items, response, err := client.GetIssueLabels(owner, repo, index, gitea.ListLabelsOptions{ListOptions: gitea.ListOptions{Page: page, PageSize: pageSize}})
+		if err != nil {
+			return nil, err
+		}
+		labels = append(labels, items...)
+		if len(items) == 0 || (response != nil && response.NextPage == 0 && len(items) < pageSize) {
+			break
+		}
+		if response != nil && response.NextPage > 0 {
+			page = response.NextPage
+		} else {
+			page++
+		}
+	}
+	return labels, nil
+}
+
 func issueLabelIDs(client *gitea.Client, owner, repo string, names []string) ([]int64, error) {
-	labels, _, err := client.ListRepoLabels(owner, repo, gitea.ListLabelsOptions{ListOptions: gitea.ListOptions{Page: 1, PageSize: 50}})
+	labels, err := issueRepoLabels(client, owner, repo)
 	if err != nil {
 		return nil, err
 	}
@@ -537,13 +595,27 @@ func issueLabelIDs(client *gitea.Client, owner, repo string, names []string) ([]
 }
 
 func issueMilestoneID(client *gitea.Client, owner, repo, title string) (int64, error) {
-	milestones, _, err := client.ListRepoMilestones(owner, repo, gitea.ListMilestoneOption{ListOptions: gitea.ListOptions{Page: 1, PageSize: 50}})
-	if err != nil {
-		return 0, err
-	}
-	for _, milestone := range milestones {
-		if milestone.Title == title {
-			return milestone.ID, nil
+	const pageSize = 50
+	for page := 1; ; {
+		items, response, err := client.ListRepoMilestones(owner, repo, gitea.ListMilestoneOption{
+			ListOptions: gitea.ListOptions{Page: page, PageSize: pageSize},
+			State:       gitea.StateAll,
+		})
+		if err != nil {
+			return 0, err
+		}
+		for _, milestone := range items {
+			if milestone.Title == title {
+				return milestone.ID, nil
+			}
+		}
+		if len(items) == 0 || (response != nil && response.NextPage == 0 && len(items) < pageSize) {
+			break
+		}
+		if response != nil && response.NextPage > 0 {
+			page = response.NextPage
+		} else {
+			page++
 		}
 	}
 	return 0, fmt.Errorf("no such milestone: %s", title)
@@ -558,8 +630,7 @@ func issueNumber(raw string) (int64, error) {
 }
 
 func interactiveInput() bool {
-	info, err := os.Stdin.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(os.Stdin)
 }
 
 func sortedKeys(values map[string]bool) []string {
