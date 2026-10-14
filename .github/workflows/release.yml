@@ -7,16 +7,20 @@ permissions:
 
 jobs:
   build:
+    name: ${{ matrix.platform }}-${{ matrix.goarch }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          - goos: windows
+          - platform: windows
+            goos: windows
             goarch: amd64
-          - goos: darwin
+          - platform: macos
+            goos: darwin
             goarch: amd64
-          - goos: darwin
+          - platform: macos
+            goos: darwin
             goarch: arm64
     steps:
       - uses: actions/checkout@v4
