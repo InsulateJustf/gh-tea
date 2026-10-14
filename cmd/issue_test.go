@@ -408,13 +408,66 @@ func TestIssueViewCommentsCloseReopenCommentAndStatus(t *testing.T) {
 		t.Fatalf("status filters = %v", statusFilters)
 	}
 }
-func TestIssueViewJSONProducesAnObject(t *testing.T) {
+func TestIssueViewJSONIncludesPullRequestMetadataAsBoolean(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		pullRequest string
+		expected    bool
+	}{
+		{name: "issue", expected: false},
+		{name: "pull request", pullRequest: `,"pull_request":{}`, expected: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			resetIssueCLIState(t)
+			var requests []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests = append(requests, r.URL.Path)
+				switch r.URL.Path {
+				case "/api/v1/version":
+					fmt.Fprint(w, `{"version":"1.22.0"}`)
+				case "/api/v1/repos/alice/project/issues/17":
+					fmt.Fprintf(w, `{"number":17,"title":"Issue","state":"open","html_url":"https://example/issues/17"%s}`, test.pullRequest)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			configPath := filepath.Join(t.TempDir(), "config.yaml")
+			configYAML := fmt.Sprintf("tea:\n  test:\n    name: test\n    host: %s\n    token: synthetic-token\ndefault: test\n", server.URL)
+			if err := os.WriteFile(configPath, []byte(configYAML), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var stdout strings.Builder
+			rootCmd.SetOut(&stdout)
+			rootCmd.SetArgs([]string{"--config", configPath, "issue", "view", "17", "--repo", "alice/project", "--json", "number,isPullRequest"})
+			t.Cleanup(func() {
+				rootCmd.SetArgs(nil)
+				rootCmd.SetOut(os.Stdout)
+			})
+			if err := rootCmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			var got map[string]any
+			if err := json.Unmarshal([]byte(stdout.String()), &got); err != nil {
+				t.Fatalf("view JSON is invalid: %v: %s", err, stdout.String())
+			}
+			if got["number"] != float64(17) || got["isPullRequest"] != test.expected {
+				t.Fatalf("view JSON = %#v", got)
+			}
+			if len(requests) != 2 || requests[1] != "/api/v1/repos/alice/project/issues/17" {
+				t.Fatalf("requests = %#v", requests)
+			}
+		})
+	}
+}
+
+func TestIssueViewJSONOmitsUnselectedPullRequestMetadata(t *testing.T) {
 	resetIssueCLIState(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/version" {
 			fmt.Fprint(w, `{"version":"1.22.0"}`)
 		} else if r.URL.Path == "/api/v1/repos/alice/project/issues/17" {
-			fmt.Fprint(w, `{"number":17,"title":"Issue","state":"open","user":{"login":"author"}}`)
+			fmt.Fprint(w, `{"number":17,"title":"Issue","state":"open","user":{"login":"author"},"pull_request":{}}`)
 		} else {
 			http.NotFound(w, r)
 		}
@@ -441,6 +494,53 @@ func TestIssueViewJSONProducesAnObject(t *testing.T) {
 	}
 	if got["number"] != float64(17) || got["title"] != "Issue" || got["author"].(map[string]any)["login"] != "author" {
 		t.Fatalf("view JSON = %#v", got)
+	}
+	if _, exists := got["isPullRequest"]; exists {
+		t.Fatalf("unselected isPullRequest was included: %#v", got)
+	}
+}
+
+func TestIssueListRejectsViewOnlyJSONField(t *testing.T) {
+	resetIssueCLIState(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/version" {
+			fmt.Fprint(w, `{"version":"1.22.0"}`)
+		} else {
+			http.Error(w, "field validation should run before issue listing", http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	configYAML := fmt.Sprintf("tea:\n  test:\n    name: test\n    host: %s\n    token: synthetic-token\ndefault: test\n", server.URL)
+	if err := os.WriteFile(configPath, []byte(configYAML), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rootCmd.SetArgs([]string{"--config", configPath, "issue", "list", "--repo", "alice/project", "--json", "isPullRequest"})
+	err := rootCmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), `unknown JSON field "isPullRequest"; available fields:`) || !strings.HasSuffix(err.Error(), "available fields: "+issueListJSONFields) {
+		t.Fatalf("list error = %v", err)
+	}
+}
+
+func TestIssueViewUnknownJSONFieldListsViewFields(t *testing.T) {
+	resetIssueCLIState(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/version" {
+			fmt.Fprint(w, `{"version":"1.22.0"}`)
+		} else {
+			http.Error(w, "field validation should run before issue view", http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	configYAML := fmt.Sprintf("tea:\n  test:\n    name: test\n    host: %s\n    token: synthetic-token\ndefault: test\n", server.URL)
+	if err := os.WriteFile(configPath, []byte(configYAML), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rootCmd.SetArgs([]string{"--config", configPath, "issue", "view", "17", "--repo", "alice/project", "--json", "notAField"})
+	err := rootCmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), `unknown JSON field "notAField"; available fields:`) || !strings.HasSuffix(err.Error(), "available fields: "+issueViewJSONFields) {
+		t.Fatalf("view error = %v", err)
 	}
 }
 func TestIssueCreateWithoutTTYRequiresTitle(t *testing.T) {
@@ -491,7 +591,7 @@ func TestIssueUnknownJSONFieldListsAvailableFields(t *testing.T) {
 	}
 	rootCmd.SetArgs([]string{"--config", configPath, "issue", "list", "--repo", "alice/project", "--json", "notAField"})
 	err := rootCmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), `unknown JSON field "notAField"; available fields:`) || !strings.Contains(err.Error(), "number,title,state") {
+	if err == nil || !strings.Contains(err.Error(), `unknown JSON field "notAField"; available fields:`) || !strings.HasSuffix(err.Error(), "available fields: "+issueListJSONFields) {
 		t.Fatalf("error = %v", err)
 	}
 }

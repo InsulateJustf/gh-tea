@@ -240,12 +240,15 @@ gh tea repo list --use work --json nameWithOwner,visibility,url
 gh tea repo view alice/demo --use work --json nameWithOwner,defaultBranchRef.name
 ```
 
-`--json` 使用逗号分隔的字段名。`list` 输出数组，`view` 输出单个对象；未知字段会报错并列出可用字段。
+`--json` 使用逗号分隔的字段名。`list` 输出数组，`view` 输出单个对象；未知字段会报错，并只列出对应命令支持的字段。
 
 | 对象 | 可选字段 |
 | --- | --- |
-| Issue | `number`, `title`, `state`, `url`, `createdAt`, `updatedAt`, `closedAt`, `author.login`, `labels[].name`, `assignees[].login`, `milestone.title`, `body` |
+| Issue list | `number`, `title`, `state`, `url`, `createdAt`, `updatedAt`, `closedAt`, `author.login`, `labels[].name`, `assignees[].login`, `milestone.title`, `body` |
+| Issue view | Issue list 字段，以及 `isPullRequest`（布尔值；由 Gitea 的 PR 元信息判定，不依赖 URL） |
 | 仓库 | `name`, `nameWithOwner`, `description`, `visibility`, `isPrivate`, `url`, `updatedAt`, `defaultBranchRef.name` |
+
+`isPullRequest` 仅支持 `issue view`，不支持 `issue list`。未在 `view --json` 中选择该字段时，输出会省略它。gh-tea v0.5.0 不提供此字段；满足消费者契约的最低发行版本将在实际发布后记录。
 
 仓库 JSON 不支持 `pushedAt`：Gitea 没有提供可靠的仓库最后推送时间，CLI 请求该字段时会报错。该时间不可用不代表仓库从未推送。CLI 不会以可见活动流或提交时间代替推送时间，也不会为仓库 JSON 查询活动接口。
 

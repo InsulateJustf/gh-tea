@@ -22,7 +22,9 @@ import (
 	"github.com/InsulateJustf/gh-tea/pkg/tea"
 )
 
-const issueJSONFields = "number,title,state,url,createdAt,updatedAt,closedAt,author.login,labels[].name,assignees[].login,milestone.title,body"
+const issueListJSONFields = "number,title,state,url,createdAt,updatedAt,closedAt,author.login,labels[].name,assignees[].login,milestone.title,body"
+
+const issueViewJSONFields = issueListJSONFields + ",isPullRequest"
 
 var (
 	issueListState, issueListAssignee, issueListAuthor, issueListMention, issueListSearch      string
@@ -135,7 +137,7 @@ func issueListRun(cmd *cobra.Command, _ []string) error {
 	var jsonFields []string
 	if issueListJSON != "" {
 		jsonFields = strings.Split(issueListJSON, ",")
-		if err := validateIssueJSONFields(jsonFields); err != nil {
+		if err := validateIssueJSONFields(jsonFields, issueListJSONFields); err != nil {
 			return err
 		}
 	}
@@ -247,7 +249,7 @@ func issueViewRun(cmd *cobra.Command, args []string) error {
 	var jsonFields []string
 	if issueViewJSON != "" {
 		jsonFields = strings.Split(issueViewJSON, ",")
-		if err := validateIssueJSONFields(jsonFields); err != nil {
+		if err := validateIssueJSONFields(jsonFields, issueViewJSONFields); err != nil {
 			return err
 		}
 	}
@@ -466,12 +468,15 @@ func issueBrowse(owner, repo string, number int64) error {
 
 var issueHost string
 
-func validateIssueJSONFields(fields []string) error {
+func validateIssueJSONFields(fields []string, available string) error {
 	for _, field := range fields {
 		switch field {
-		case "number", "title", "state", "url", "createdAt", "updatedAt", "closedAt", "author.login", "labels[].name", "assignees[].login", "milestone.title", "body":
+		case "number", "title", "state", "url", "createdAt", "updatedAt", "closedAt", "author.login", "labels[].name", "assignees[].login", "milestone.title", "body", "isPullRequest":
+			if field == "isPullRequest" && available != issueViewJSONFields {
+				return fmt.Errorf("unknown JSON field %q; available fields: %s", field, available)
+			}
 		default:
-			return fmt.Errorf("unknown JSON field %q; available fields: %s", field, issueJSONFields)
+			return fmt.Errorf("unknown JSON field %q; available fields: %s", field, available)
 		}
 	}
 	return nil
@@ -536,6 +541,8 @@ func projectIssueFields(item *gitea.Issue, fields []string) map[string]any {
 			} else {
 				projected["milestone"] = map[string]string{"title": item.Milestone.Title}
 			}
+		case "isPullRequest":
+			projected[field] = item.PullRequest != nil
 		case "body":
 			projected[field] = item.Body
 		}
