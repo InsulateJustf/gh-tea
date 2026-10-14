@@ -272,115 +272,108 @@ func TestRepoViewJSONAndDeleteYes(t *testing.T) {
 	}
 }
 
-func TestRepoViewJSONPushedAtUsesLatestPushActivity(t *testing.T) {
-	resetRepoCLIState(t)
-	var activityPages []string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/version" {
-			fmt.Fprint(w, `{"version":"1.22.0"}`)
-			return
-		}
-		switch r.URL.Path {
-		case "/api/v1/repos/alice/project":
-			fmt.Fprint(w, `{"name":"project","full_name":"alice/project","html_url":"https://tea.example/alice/project"}`)
-		case "/api/v1/repos/alice/project/activities/feeds":
-			if r.Header.Get("Authorization") != "token synthetic-token" {
-				t.Errorf("activity request authorization = %q", r.Header.Get("Authorization"))
+func TestRepoJSONRejectsPushedAtBeforeFetchingRepositoryData(t *testing.T) {
+	tests := []struct {
+		name         string
+		args         []string
+		activityFeed string
+	}{
+		{
+			name:         "view with mixed fields and stale privacy-filtered activity",
+			args:         []string{"repo", "view", "alice/project", "--json", "name,pushedAt"},
+			activityFeed: `[{"op_type":"commit_repo","created":"2026-10-12T09:08:07Z"}]`,
+		},
+		{
+			name:         "view with empty activity feed",
+			args:         []string{"repo", "view", "alice/project", "--json", "pushedAt"},
+			activityFeed: `[]`,
+		},
+		{
+			name:         "list with empty repository list and mixed fields",
+			args:         []string{"repo", "list", "--json", "name,pushedAt"},
+			activityFeed: `[]`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resetRepoCLIState(t)
+			repositoryDataRequested := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/v1/version":
+					fmt.Fprint(w, `{"version":"1.22.0"}`)
+				case "/api/v1/repos/alice/project":
+					repositoryDataRequested = true
+					fmt.Fprint(w, `{"name":"project","full_name":"alice/project"}`)
+				case "/api/v1/user/repos":
+					repositoryDataRequested = true
+					fmt.Fprint(w, `[]`)
+				case "/api/v1/repos/alice/project/activities/feeds":
+					t.Error("unsupported pushedAt requested repository activities")
+					fmt.Fprint(w, test.activityFeed)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			configPath := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(configPath, []byte(fmt.Sprintf("tea:\n  test:\n    name: test\n    host: %s\n    token: synthetic-token\ndefault: test\n", server.URL)), 0600); err != nil {
+				t.Fatal(err)
 			}
-			activityPages = append(activityPages, r.URL.Query().Get("page"))
-			switch r.URL.Query().Get("page") {
-			case "1":
-				fmt.Fprint(w, `[{"op_type":"create_issue","created":"2026-10-13T10:00:00Z"}]`)
-			case "2":
-				fmt.Fprint(w, `[{"op_type":"push_tag","created":"2026-10-12T09:08:07Z"},{"op_type":"commit_repo","created":"2026-10-11T08:00:00Z"}]`)
-			default:
-				http.NotFound(w, r)
+			rootCmd.SetOut(&strings.Builder{})
+			rootCmd.SetArgs(append([]string{"--config", configPath}, test.args...))
+			err := rootCmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), "pushedAt") || !strings.Contains(strings.ToLower(err.Error()), "unsupported") {
+				t.Fatalf("error = %v, want unsupported pushedAt error", err)
 			}
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
-	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(configPath, []byte(fmt.Sprintf("tea:\n  test:\n    name: test\n    host: %s\n    token: synthetic-token\ndefault: test\n", server.URL)), 0600); err != nil {
-		t.Fatal(err)
-	}
-	var stdout strings.Builder
-	rootCmd.SetOut(&stdout)
-	rootCmd.SetArgs([]string{"--config", configPath, "repo", "view", "alice/project", "--json", "name,pushedAt"})
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("repo view: %v", err)
-	}
-	if !strings.Contains(stdout.String(), `"pushedAt": "2026-10-12T09:08:07Z"`) {
-		t.Fatalf("view JSON pushedAt = %s", stdout.String())
-	}
-	if strings.Join(activityPages, ",") != "1,2" {
-		t.Fatalf("activity pages = %v", activityPages)
+			if repositoryDataRequested {
+				t.Fatal("repository data was fetched before rejecting pushedAt")
+			}
+		})
 	}
 }
 
-func TestRepoViewJSONPushedAtIsNullWithoutPushActivity(t *testing.T) {
-	resetRepoCLIState(t)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/version" {
-			fmt.Fprint(w, `{"version":"1.22.0"}`)
-			return
-		}
-		switch r.URL.Path {
-		case "/api/v1/repos/alice/project":
-			fmt.Fprint(w, `{"name":"project","full_name":"alice/project"}`)
-		case "/api/v1/repos/alice/project/activities/feeds":
-			fmt.Fprint(w, `[]`)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
-	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(configPath, []byte(fmt.Sprintf("tea:\n  test:\n    name: test\n    host: %s\n    token: synthetic-token\ndefault: test\n", server.URL)), 0600); err != nil {
-		t.Fatal(err)
+func TestRepoJSONSupportedFieldsDoNotRequestActivities(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "view", args: []string{"repo", "view", "alice/project", "--json", "name,updatedAt"}},
+		{name: "list", args: []string{"repo", "list", "--json", "name,updatedAt"}},
 	}
-	var stdout strings.Builder
-	rootCmd.SetOut(&stdout)
-	rootCmd.SetArgs([]string{"--config", configPath, "repo", "view", "alice/project", "--json", "pushedAt"})
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("repo view: %v", err)
-	}
-	if !strings.Contains(stdout.String(), `"pushedAt": null`) {
-		t.Fatalf("view JSON pushedAt = %s", stdout.String())
-	}
-}
-
-func TestRepoListJSONWithoutPushedAtSkipsActivityRequests(t *testing.T) {
-	resetRepoCLIState(t)
-	activityRequested := false
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/version" {
-			fmt.Fprint(w, `{"version":"1.22.0"}`)
-			return
-		}
-		switch r.URL.Path {
-		case "/api/v1/user/repos":
-			fmt.Fprint(w, `[{"name":"project","full_name":"alice/project"}]`)
-		case "/api/v1/repos/alice/project/activities/feeds":
-			activityRequested = true
-			fmt.Fprint(w, `[]`)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
-	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(configPath, []byte(fmt.Sprintf("tea:\n  test:\n    name: test\n    host: %s\n    token: synthetic-token\ndefault: test\n", server.URL)), 0600); err != nil {
-		t.Fatal(err)
-	}
-	rootCmd.SetOut(&strings.Builder{})
-	rootCmd.SetArgs([]string{"--config", configPath, "repo", "list", "--json", "name"})
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("repo list: %v", err)
-	}
-	if activityRequested {
-		t.Fatal("activity endpoint called without requesting pushedAt")
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resetRepoCLIState(t)
+			activityRequested := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/v1/version":
+					fmt.Fprint(w, `{"version":"1.22.0"}`)
+				case "/api/v1/repos/alice/project":
+					fmt.Fprint(w, `{"name":"project","full_name":"alice/project","updated_at":"2026-10-13T10:00:00Z"}`)
+				case "/api/v1/user/repos":
+					fmt.Fprint(w, `[{"name":"project","full_name":"alice/project","updated_at":"2026-10-13T10:00:00Z"}]`)
+				case "/api/v1/repos/alice/project/activities/feeds":
+					activityRequested = true
+					fmt.Fprint(w, `[{"op_type":"commit_repo","created":"2026-10-12T09:08:07Z"}]`)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			configPath := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(configPath, []byte(fmt.Sprintf("tea:\n  test:\n    name: test\n    host: %s\n    token: synthetic-token\ndefault: test\n", server.URL)), 0600); err != nil {
+				t.Fatal(err)
+			}
+			rootCmd.SetOut(&strings.Builder{})
+			rootCmd.SetArgs(append([]string{"--config", configPath}, test.args...))
+			if err := rootCmd.Execute(); err != nil {
+				t.Fatalf("repo command: %v", err)
+			}
+			if activityRequested {
+				t.Fatal("supported fields requested repository activities")
+			}
+		})
 	}
 }
 
