@@ -66,17 +66,20 @@ For authenticated repository operations, `--repo/-R <owner/name>` overrides repo
 | `gh tea issue reopen <number>` | Reopen an issue |
 | `gh tea issue comment <number>` | Add a comment with `--body`, or prompt in a terminal |
 | `gh tea issue status` | Show open issues assigned to, created by, or mentioning the authenticated user |
+| `gh tea repo list [owner]` | List repositories; supports `--limit` and `--json` |
+| `gh tea repo view [owner/name]` | View a repository; supports `--web` and `--json` |
+| `gh tea repo create [name]` | Create a repository with `--private`, `--description`, `--org`, and optional `--clone`; prompts for name, visibility, and description when omitted interactively |
+| `gh tea repo delete <owner/name>` | Delete after confirmation, or pass `--yes` |
+| `gh tea repo edit <owner/name>` | Set `--description`, `--homepage`, `--private`, and/or `--archived` |
+| `gh tea repo fork <owner/name>` | Fork within the selected Gitea instance; supports `--org` and `--clone` |
+| `gh tea repo rename <new-name>` | Rename the current repository selected by `--repo` or the current Gitea remote |
+| `gh tea repo clone <owner/name> [directory]` | Clone a repository with Git |
+| `gh tea repo browse` | Open the current repository page in a browser |
 
-Issue JSON fields: `number,title,state,url,createdAt,updatedAt,closedAt,author.login,labels[].name,assignees[].login,milestone.title,body`. Unsupported flags, including `--project` and `--template/-t`, are rejected rather than ignored. `--jq` and template rendering are not implemented.
-`issue list --json` emits an array; `issue view --json` emits one issue object. In a non-interactive run, `issue create` requires `--title`; if no body flag/file is supplied, the body is empty.
+Issue JSON fields: `number,title,state,url,createdAt,updatedAt,closedAt,author.login,labels[].name,assignees[].login,milestone.title,body`. Repository JSON fields: `name,nameWithOwner,description,visibility,isPrivate,url,updatedAt,pushedAt,defaultBranchRef.name`. Unsupported flags, including `--project` and `--template/-t`, are rejected rather than ignored. `--jq` and template rendering are not implemented.
+`issue list --json` and `repo list --json` emit arrays; `issue view --json` and `repo view --json` emit one object. In a non-interactive run, `issue create` requires `--title`; if no body flag/file is supplied, the body is empty. `repo create` requires a name argument, and `repo delete` requires `--yes`.
 
 Global flags: `--config/-c <file>` (config file), `--use <name>` (choose a Tea for this invocation), `--repo/-R <owner/name>` (override repository inference for repository operations), `--debug/-d` (debug logging).
-
-### Planned commands
-
-Tier 2 repo commands are planned; they are not implemented yet:
-
-- **Tier 2 — repo**: `gh tea repo list/view/create/delete/edit/fork/rename/clone/browse`
 
 ## OAuth app registration
 
