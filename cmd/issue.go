@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"slices"
 	"time"
 
 	"code.gitea.io/sdk/gitea"
@@ -24,7 +25,7 @@ import (
 
 const issueListJSONFields = "number,title,state,url,createdAt,updatedAt,closedAt,author.login,labels[].name,assignees[].login,milestone.title,body"
 
-const issueViewJSONFields = issueListJSONFields + ",isPullRequest"
+const issueViewJSONFields = issueListJSONFields + ",isPullRequest,comments"
 
 var (
 	issueListState, issueListAssignee, issueListAuthor, issueListMention, issueListSearch      string
@@ -67,6 +68,7 @@ func init() {
 
 	issueCreateCmd.Flags().StringVarP(&issueCreateBodyFile, "body-file-short-F", "F", "", "read issue body from a file (use - for stdin)")
 	issueCreateCmd.Flags().Lookup("body-file-short-F").Hidden = true
+	issueViewCmd.SilenceUsage = true
 	issueViewCmd.Flags().BoolVar(&issueViewComments, "comments", false, "show issue comments")
 	issueViewCmd.Flags().BoolVar(&issueViewWeb, "web", false, "open issue in a browser")
 	issueViewCmd.Flags().StringVar(&issueViewJSON, "json", "", "output selected fields as JSON")
@@ -258,7 +260,14 @@ func issueViewRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if issueViewJSON != "" {
-		return writeIssueJSON(cmd, []*gitea.Issue{item}, jsonFields, true)
+		var comments []*gitea.Comment
+		if slices.Contains(jsonFields, "comments") {
+			comments, err = issueCommentPages(client, owner, repo, index)
+			if err != nil {
+				return err
+			}
+		}
+		return writeIssueViewJSON(cmd, item, jsonFields, comments)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "%s (%s)\n\n%s\n", item.Title, item.State, item.Body)
 	if issueViewComments {
@@ -471,8 +480,9 @@ var issueHost string
 func validateIssueJSONFields(fields []string, available string) error {
 	for _, field := range fields {
 		switch field {
-		case "number", "title", "state", "url", "createdAt", "updatedAt", "closedAt", "author.login", "labels[].name", "assignees[].login", "milestone.title", "body", "isPullRequest":
-			if field == "isPullRequest" && available != issueViewJSONFields {
+		case "number", "title", "state", "url", "createdAt", "updatedAt", "closedAt", "author.login", "labels[].name", "assignees[].login", "milestone.title", "body":
+		case "isPullRequest", "comments":
+			if available != issueViewJSONFields {
 				return fmt.Errorf("unknown JSON field %q; available fields: %s", field, available)
 			}
 		default:
@@ -493,6 +503,61 @@ func writeIssueJSON(cmd *cobra.Command, issues []*gitea.Issue, selected []string
 		rows = append(rows, projectIssueFields(item, selected))
 	}
 	return encoder.Encode(rows)
+}
+
+func writeIssueViewJSON(cmd *cobra.Command, item *gitea.Issue, fields []string, comments []*gitea.Comment) error {
+	projected := projectIssueFields(item, fields)
+	if slices.Contains(fields, "comments") {
+		projected["comments"] = projectIssueComments(comments)
+	}
+	encoded, err := json.MarshalIndent(projected, "", "  ")
+	if err != nil {
+		return err
+	}
+	encoded = append(encoded, '\n')
+	_, err = cmd.OutOrStdout().Write(encoded)
+	return err
+}
+
+type issueJSONCommentAuthor struct {
+	Login string `json:"login"`
+}
+
+type issueJSONComment struct {
+	ID        int64                  `json:"id"`
+	Author    *issueJSONCommentAuthor `json:"author"`
+	Body      string                 `json:"body"`
+	CreatedAt *string                `json:"createdAt"`
+	UpdatedAt *string                `json:"updatedAt"`
+	URL       *string                `json:"url"`
+}
+
+func projectIssueComments(comments []*gitea.Comment) []issueJSONComment {
+	projected := make([]issueJSONComment, 0, len(comments))
+	for _, comment := range comments {
+		var author *issueJSONCommentAuthor
+		if comment.Poster != nil {
+			author = &issueJSONCommentAuthor{Login: comment.Poster.UserName}
+		}
+		var createdAt, updatedAt *string
+		if !comment.Created.IsZero() {
+			value := comment.Created.Format(time.RFC3339)
+			createdAt = &value
+		}
+		if !comment.Updated.IsZero() {
+			value := comment.Updated.Format(time.RFC3339)
+			updatedAt = &value
+		}
+		var url *string
+		if comment.HTMLURL != "" {
+			url = &comment.HTMLURL
+		}
+		projected = append(projected, issueJSONComment{
+			ID: comment.ID, Author: author, Body: comment.Body,
+			CreatedAt: createdAt, UpdatedAt: updatedAt, URL: url,
+		})
+	}
+	return projected
 }
 
 func projectIssueFields(item *gitea.Issue, fields []string) map[string]any {

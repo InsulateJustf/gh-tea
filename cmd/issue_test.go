@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -500,7 +501,7 @@ func TestIssueViewJSONOmitsUnselectedPullRequestMetadata(t *testing.T) {
 	}
 }
 
-func TestIssueListRejectsViewOnlyJSONField(t *testing.T) {
+func TestIssueListRejectsViewOnlyJSONFields(t *testing.T) {
 	resetIssueCLIState(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/version" {
@@ -515,11 +516,15 @@ func TestIssueListRejectsViewOnlyJSONField(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte(configYAML), 0600); err != nil {
 		t.Fatal(err)
 	}
-	rootCmd.SetArgs([]string{"--config", configPath, "issue", "list", "--repo", "alice/project", "--json", "isPullRequest"})
-	err := rootCmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), `unknown JSON field "isPullRequest"; available fields:`) || !strings.HasSuffix(err.Error(), "available fields: "+issueListJSONFields) {
-		t.Fatalf("list error = %v", err)
+	for _, field := range []string{"isPullRequest", "comments"} {
+		rootCmd.SetArgs([]string{"--config", configPath, "issue", "list", "--repo", "alice/project", "--json", field})
+		err := rootCmd.Execute()
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf(`unknown JSON field %q; available fields:`, field)) ||
+			!strings.HasSuffix(err.Error(), "available fields: "+issueListJSONFields) {
+			t.Fatalf("list error for %q = %v", field, err)
+		}
 	}
+	t.Cleanup(func() { rootCmd.SetArgs(nil) })
 }
 
 func TestIssueViewUnknownJSONFieldListsViewFields(t *testing.T) {
@@ -594,4 +599,295 @@ func TestIssueUnknownJSONFieldListsAvailableFields(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), `unknown JSON field "notAField"; available fields:`) || !strings.HasSuffix(err.Error(), "available fields: "+issueListJSONFields) {
 		t.Fatalf("error = %v", err)
 	}
+}
+func TestIssueViewJSONCommentsPreserveSourceDataAndFetchAllPages(t *testing.T) {
+	resetIssueCLIState(t)
+	var commentRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/version":
+			fmt.Fprint(w, `{"version":"1.22.0"}`)
+		case "/api/v1/repos/alice/project/issues/17":
+			fmt.Fprint(w, `{"number":17,"title":"Issue","state":"open"}`)
+		case "/api/v1/repos/alice/project/issues/17/comments":
+			commentRequests++
+			if r.URL.Query().Get("page") == "1" {
+				comments := make([]map[string]any, 50)
+				for i := range comments {
+					comments[i] = map[string]any{"id": i + 1, "body": fmt.Sprintf("comment-%d", i+1)}
+				}
+				_ = json.NewEncoder(w).Encode(comments)
+				return
+			}
+			fmt.Fprint(w, `[{"id":9007199254740993,"body":"  **raw**\n","user":{"login":"writer"},"created_at":"2026-01-02T03:04:05Z","updated_at":"2026-01-03T04:05:06+01:00","html_url":"https://example/comments/9007199254740993"}]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	configYAML := fmt.Sprintf("tea:\n  test:\n    name: test\n    host: %s\n    token: synthetic-token\ndefault: test\n", server.URL)
+	if err := os.WriteFile(configPath, []byte(configYAML), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr strings.Builder
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetErr(&stderr)
+	rootCmd.SetArgs([]string{"--config", configPath, "issue", "view", "17", "--repo", "alice/project", "--json", "title,comments"})
+	t.Cleanup(func() {
+		rootCmd.SetArgs(nil)
+		rootCmd.SetOut(os.Stdout)
+		rootCmd.SetErr(os.Stderr)
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("issue view: %v (stderr: %s)", err, stderr.String())
+	}
+	var got struct {
+		Title    string `json:"title"`
+		Comments []struct {
+			ID        json.RawMessage `json:"id"`
+			Author    *struct{ Login string `json:"login"` } `json:"author"`
+			Body      string `json:"body"`
+			CreatedAt *string `json:"createdAt"`
+			UpdatedAt *string `json:"updatedAt"`
+			URL       *string `json:"url"`
+		} `json:"comments"`
+	}
+	if err := json.Unmarshal([]byte(stdout.String()), &got); err != nil {
+		t.Fatalf("view JSON is invalid: %v: %s", err, stdout.String())
+	}
+	if got.Title != "Issue" || len(got.Comments) != 51 || commentRequests != 2 {
+		t.Fatalf("title/comments/request count = %q/%d/%d", got.Title, len(got.Comments), commentRequests)
+	}
+	if got.Comments[0].Body != "comment-1" || got.Comments[49].Body != "comment-50" {
+		t.Fatalf("comments did not preserve server page order: first=%q fiftieth=%q", got.Comments[0].Body, got.Comments[49].Body)
+	}
+	last := got.Comments[50]
+	if string(last.ID) != "9007199254740993" || last.Author == nil || last.Author.Login != "writer" ||
+		last.Body != "  **raw**\n" || last.CreatedAt == nil || *last.CreatedAt != "2026-01-02T03:04:05Z" ||
+		last.UpdatedAt == nil || *last.UpdatedAt != "2026-01-03T04:05:06+01:00" ||
+		last.URL == nil || *last.URL != "https://example/comments/9007199254740993" {
+		t.Fatalf("last comment = %#v", last)
+	}
+}
+
+func TestIssueViewJSONCommentsFailureDoesNotWritePartialOutput(t *testing.T) {
+	resetIssueCLIState(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/version":
+			fmt.Fprint(w, `{"version":"1.22.0"}`)
+		case "/api/v1/repos/alice/project/issues/17":
+			fmt.Fprint(w, `{"number":17,"title":"Issue","state":"open"}`)
+		case "/api/v1/repos/alice/project/issues/17/comments":
+			if r.URL.Query().Get("page") == "1" {
+				comments := make([]map[string]any, 50)
+				for i := range comments {
+					comments[i] = map[string]any{"id": i + 1, "body": "partial"}
+				}
+				_ = json.NewEncoder(w).Encode(comments)
+				return
+			}
+			http.Error(w, "second page unavailable", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	configYAML := fmt.Sprintf("tea:\n  test:\n    name: test\n    host: %s\n    token: synthetic-token\ndefault: test\n", server.URL)
+	if err := os.WriteFile(configPath, []byte(configYAML), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr strings.Builder
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetErr(&stderr)
+	rootCmd.SetArgs([]string{"--config", configPath, "issue", "view", "17", "--repo", "alice/project", "--json", "title,comments"})
+	t.Cleanup(func() {
+		rootCmd.SetArgs(nil)
+		rootCmd.SetOut(os.Stdout)
+		rootCmd.SetErr(os.Stderr)
+	})
+	err := rootCmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "second page unavailable") {
+		t.Fatalf("issue view error = %v", err)
+	}
+	if !strings.Contains(stderr.String(), "second page unavailable") {
+		t.Fatalf("failed JSON view did not write a diagnostic to stderr: %s", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("failed JSON view wrote to stdout: %s", stdout.String())
+	}
+}
+func TestIssueViewJSONCommentsEmptyAndUnrequested(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		jsonFields       string
+		withCommentsFlag bool
+		wantComments     bool
+	}{
+		{name: "empty selected comments", jsonFields: "title,comments", wantComments: true},
+		{name: "unselected comments", jsonFields: "title"},
+		{name: "comments flag does not change JSON projection", jsonFields: "title", withCommentsFlag: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			resetIssueCLIState(t)
+			commentRequests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/v1/version":
+					fmt.Fprint(w, `{"version":"1.22.0"}`)
+				case "/api/v1/repos/alice/project/issues/17":
+					fmt.Fprint(w, `{"number":17,"title":"Issue","state":"open"}`)
+				case "/api/v1/repos/alice/project/issues/17/comments":
+					commentRequests++
+					fmt.Fprint(w, `[]`)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			configPath := filepath.Join(t.TempDir(), "config.yaml")
+			configYAML := fmt.Sprintf("tea:\n  test:\n    name: test\n    host: %s\n    token: synthetic-token\ndefault: test\n", server.URL)
+			if err := os.WriteFile(configPath, []byte(configYAML), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var stdout strings.Builder
+			rootCmd.SetOut(&stdout)
+			args := []string{"--config", configPath, "issue", "view", "17", "--repo", "alice/project", "--json", test.jsonFields}
+			if test.withCommentsFlag {
+				args = append(args, "--comments")
+			}
+			rootCmd.SetArgs(args)
+			t.Cleanup(func() {
+				rootCmd.SetArgs(nil)
+				rootCmd.SetOut(os.Stdout)
+			})
+			if err := rootCmd.Execute(); err != nil {
+				t.Fatalf("issue view: %v", err)
+			}
+			var got map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(stdout.String()), &got); err != nil {
+				t.Fatalf("view JSON is invalid: %v: %s", err, stdout.String())
+			}
+			raw, selected := got["comments"]
+			if selected != test.wantComments {
+				t.Fatalf("comments field selected = %v, want %v: %s", selected, test.wantComments, stdout.String())
+			}
+			if test.wantComments && string(raw) != "[]" {
+				t.Fatalf("empty comments = %s, want []", raw)
+			}
+			wantRequests := 0
+			if test.wantComments {
+				wantRequests = 1
+			}
+			if commentRequests != wantRequests {
+				t.Fatalf("comment requests = %d, want %d", commentRequests, wantRequests)
+			}
+		})
+	}
+}
+
+func TestIssueViewJSONCommentsMissingOptionalValuesAreNull(t *testing.T) {
+	resetIssueCLIState(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/version":
+			fmt.Fprint(w, `{"version":"1.22.0"}`)
+		case "/api/v1/repos/alice/project/issues/17":
+			fmt.Fprint(w, `{"number":17,"title":"Issue","state":"open"}`)
+		case "/api/v1/repos/alice/project/issues/17/comments":
+			fmt.Fprint(w, `[{"id":42,"body":""}]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	configYAML := fmt.Sprintf("tea:\n  test:\n    name: test\n    host: %s\n    token: synthetic-token\ndefault: test\n", server.URL)
+	if err := os.WriteFile(configPath, []byte(configYAML), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout strings.Builder
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"--config", configPath, "issue", "view", "17", "--repo", "alice/project", "--json", "comments"})
+	t.Cleanup(func() {
+		rootCmd.SetArgs(nil)
+		rootCmd.SetOut(os.Stdout)
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Comments []struct {
+			ID        int64           `json:"id"`
+			Author    json.RawMessage `json:"author"`
+			Body      string          `json:"body"`
+			CreatedAt json.RawMessage `json:"createdAt"`
+			UpdatedAt json.RawMessage `json:"updatedAt"`
+			URL       json.RawMessage `json:"url"`
+		} `json:"comments"`
+	}
+	if err := json.Unmarshal([]byte(stdout.String()), &got); err != nil {
+		t.Fatalf("view JSON is invalid: %v: %s", err, stdout.String())
+	}
+	if len(got.Comments) != 1 {
+		t.Fatalf("comments = %#v", got.Comments)
+	}
+	comment := got.Comments[0]
+	if comment.ID != 42 || string(comment.Author) != "null" || comment.Body != "" ||
+		string(comment.CreatedAt) != "null" || string(comment.UpdatedAt) != "null" || string(comment.URL) != "null" {
+		t.Fatalf("comment = %#v", comment)
+	}
+}
+
+func TestIssueViewJSONCommentsFailureReturnsNonzeroWithoutStdout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/version":
+			fmt.Fprint(w, `{"version":"1.22.0"}`)
+		case "/api/v1/repos/alice/project/issues/17":
+			fmt.Fprint(w, `{"number":17,"title":"Issue","state":"open"}`)
+		case "/api/v1/repos/alice/project/issues/17/comments":
+			if r.URL.Query().Get("page") == "1" {
+				comments := make([]map[string]any, 50)
+				for i := range comments {
+					comments[i] = map[string]any{"id": i + 1, "body": "partial"}
+				}
+				_ = json.NewEncoder(w).Encode(comments)
+				return
+			}
+			http.Error(w, "second page unavailable", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	configYAML := fmt.Sprintf("tea:\n  test:\n    name: test\n    host: %s\n    token: synthetic-token\ndefault: test\n", server.URL)
+	if err := os.WriteFile(configPath, []byte(configYAML), 0600); err != nil {
+		t.Fatal(err)
+	}
+	process := exec.Command(os.Args[0], "-test.run=^TestIssueViewJSONCommentsFailureProcessHelper$")
+	process.Env = append(os.Environ(), "GH_TEA_ISSUE_TEST_CONFIG="+configPath)
+	stdout, err := process.Output()
+	if len(stdout) != 0 {
+		t.Fatalf("failed CLI process wrote to stdout: %s", stdout)
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() == 0 {
+		t.Fatalf("CLI process error = %v, want nonzero exit", err)
+	}
+	if !strings.Contains(string(exitErr.Stderr), "second page unavailable") {
+		t.Fatalf("CLI process stderr lacks a diagnostic: %s", exitErr.Stderr)
+	}
+}
+
+func TestIssueViewJSONCommentsFailureProcessHelper(t *testing.T) {
+	configPath := os.Getenv("GH_TEA_ISSUE_TEST_CONFIG")
+	if configPath == "" {
+		return
+	}
+	os.Args = []string{"gh-tea-test", "--config", configPath, "issue", "view", "17", "--repo", "alice/project", "--json", "title,comments"}
+	Execute()
 }
