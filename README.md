@@ -248,11 +248,11 @@ gh tea repo view alice/demo --use work --json nameWithOwner,defaultBranchRef.nam
 | Issue view | Issue list 字段，以及 `isPullRequest`（布尔值；由 Gitea 的 PR 元信息判定，不依赖 URL）和 `comments` |
 | 仓库 | `name`, `nameWithOwner`, `description`, `visibility`, `isPrivate`, `url`, `updatedAt`, `defaultBranchRef.name` |
 
-`isPullRequest` 仅支持 `issue view`，不支持 `issue list`。未在 `view --json` 中选择该字段时，输出会省略它。gh-tea v0.5.0 不提供此字段；满足消费者契约的最低发行版本将在实际发布后记录。
+`isPullRequest` 仅支持 `issue view`，不支持 `issue list`。未在 `view --json` 中选择该字段时，输出会省略它。gh-tea v0.5.0 不提供此字段；满足消费者契约的最低发行版本为 [v0.6.0](https://github.com/InsulateJustf/gh-tea/releases/tag/v0.6.0)。
 
 `comments` 仅支持 `issue view --json`，不支持 `issue list`。例如 `issue view 12 --json title,comments` 会在一个对象中返回标题及完整评论；评论为按服务端分页顺序排列的数组，每项结构为 `id`（整数）、`author`（`{"login":"用户名"}` 或 `null`）、`body`（原样字符串）、`createdAt` / `updatedAt`（RFC3339 字符串或 `null`）和 `url`（评论 HTML URL 或 `null`）。无评论时为 `[]`。只有 `--json` 字段表选中 `comments` 才会请求评论；`--json title --comments` 只输出标题且不请求评论。未使用 JSON 时，普通 `issue view` 不取评论，而 `issue view 12 --comments` 仍以文本显示评论。
 
-JSON view 会先取得全部选中数据再输出；任一评论页失败时命令失败、向 stderr 报错，stdout 不会包含部分评论或成功 JSON。分页顺序不代表服务端事务快照。gh-tea v0.5.0 不提供此评论 JSON 契约；满足消费者契约的最低发行版本将在实际发布后记录。
+JSON view 会先取得全部选中数据再输出；任一评论页失败时命令失败、向 stderr 报错，stdout 不会包含部分评论或成功 JSON。分页顺序不代表服务端事务快照。gh-tea v0.5.0 不提供此评论 JSON 契约；满足消费者契约的最低发行版本为 [v0.6.0](https://github.com/InsulateJustf/gh-tea/releases/tag/v0.6.0)。
 
 仓库 JSON 不支持 `pushedAt`：Gitea 没有提供可靠的仓库最后推送时间，CLI 请求该字段时会报错。该时间不可用不代表仓库从未推送。CLI 不会以可见活动流或提交时间代替推送时间，也不会为仓库 JSON 查询活动接口。
 
