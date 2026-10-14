@@ -77,6 +77,8 @@ For authenticated repository operations, `--repo/-R <owner/name>` overrides repo
 | `gh tea repo browse` | Open the current repository page in a browser |
 
 Issue JSON fields: `number,title,state,url,createdAt,updatedAt,closedAt,author.login,labels[].name,assignees[].login,milestone.title,body`. Repository JSON fields: `name,nameWithOwner,description,visibility,isPrivate,url,updatedAt,pushedAt,defaultBranchRef.name`. Unsupported flags, including `--project` and `--template/-t`, are rejected rather than ignored. `--jq` and template rendering are not implemented.
+`pushedAt` is the timestamp of the most recent repository `commit_repo` or `push_tag` activity; it is `null` when no push activity exists. It is fetched only when requested in `--json` because it requires an additional activity-feed request.
+`repo clone` uses Git for the transfer, so Git must already have usable authentication for the selected Gitea host.
 `issue list --json` and `repo list --json` emit arrays; `issue view --json` and `repo view --json` emit one object. In a non-interactive run, `issue create` requires `--title`; if no body flag/file is supplied, the body is empty. `repo create` requires a name argument, and `repo delete` requires `--yes`.
 
 Global flags: `--config/-c <file>` (config file), `--use <name>` (choose a Tea for this invocation), `--repo/-R <owner/name>` (override repository inference for repository operations), `--debug/-d` (debug logging).

@@ -224,7 +224,7 @@ func TestRepoCloneAndBrowseUseRepositoryURLs(t *testing.T) {
 	if gotCloneURL != "https://tea.example/alice/project.git" || gotDir != "checkout" {
 		t.Fatalf("clone args = %q %q", gotCloneURL, gotDir)
 	}
-	if gotPageURL != server.URL+"/alice/project" {
+	if gotPageURL != "https://tea.example/alice/project" {
 		t.Fatalf("browse URL = %q", gotPageURL)
 	}
 }
@@ -269,6 +269,118 @@ func TestRepoViewJSONAndDeleteYes(t *testing.T) {
 	}
 	if !deleted {
 		t.Fatal("repository was not deleted")
+	}
+}
+
+func TestRepoViewJSONPushedAtUsesLatestPushActivity(t *testing.T) {
+	resetRepoCLIState(t)
+	var activityPages []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/version" {
+			fmt.Fprint(w, `{"version":"1.22.0"}`)
+			return
+		}
+		switch r.URL.Path {
+		case "/api/v1/repos/alice/project":
+			fmt.Fprint(w, `{"name":"project","full_name":"alice/project","html_url":"https://tea.example/alice/project"}`)
+		case "/api/v1/repos/alice/project/activities/feeds":
+			if r.Header.Get("Authorization") != "token synthetic-token" {
+				t.Errorf("activity request authorization = %q", r.Header.Get("Authorization"))
+			}
+			activityPages = append(activityPages, r.URL.Query().Get("page"))
+			switch r.URL.Query().Get("page") {
+			case "1":
+				fmt.Fprint(w, `[{"op_type":"create_issue","created":"2026-10-13T10:00:00Z"}]`)
+			case "2":
+				fmt.Fprint(w, `[{"op_type":"push_tag","created":"2026-10-12T09:08:07Z"},{"op_type":"commit_repo","created":"2026-10-11T08:00:00Z"}]`)
+			default:
+				http.NotFound(w, r)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf("tea:\n  test:\n    name: test\n    host: %s\n    token: synthetic-token\ndefault: test\n", server.URL)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout strings.Builder
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"--config", configPath, "repo", "view", "alice/project", "--json", "name,pushedAt"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("repo view: %v", err)
+	}
+	if !strings.Contains(stdout.String(), `"pushedAt": "2026-10-12T09:08:07Z"`) {
+		t.Fatalf("view JSON pushedAt = %s", stdout.String())
+	}
+	if strings.Join(activityPages, ",") != "1,2" {
+		t.Fatalf("activity pages = %v", activityPages)
+	}
+}
+
+func TestRepoViewJSONPushedAtIsNullWithoutPushActivity(t *testing.T) {
+	resetRepoCLIState(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/version" {
+			fmt.Fprint(w, `{"version":"1.22.0"}`)
+			return
+		}
+		switch r.URL.Path {
+		case "/api/v1/repos/alice/project":
+			fmt.Fprint(w, `{"name":"project","full_name":"alice/project"}`)
+		case "/api/v1/repos/alice/project/activities/feeds":
+			fmt.Fprint(w, `[]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf("tea:\n  test:\n    name: test\n    host: %s\n    token: synthetic-token\ndefault: test\n", server.URL)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout strings.Builder
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"--config", configPath, "repo", "view", "alice/project", "--json", "pushedAt"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("repo view: %v", err)
+	}
+	if !strings.Contains(stdout.String(), `"pushedAt": null`) {
+		t.Fatalf("view JSON pushedAt = %s", stdout.String())
+	}
+}
+
+func TestRepoListJSONWithoutPushedAtSkipsActivityRequests(t *testing.T) {
+	resetRepoCLIState(t)
+	activityRequested := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/version" {
+			fmt.Fprint(w, `{"version":"1.22.0"}`)
+			return
+		}
+		switch r.URL.Path {
+		case "/api/v1/user/repos":
+			fmt.Fprint(w, `[{"name":"project","full_name":"alice/project"}]`)
+		case "/api/v1/repos/alice/project/activities/feeds":
+			activityRequested = true
+			fmt.Fprint(w, `[]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf("tea:\n  test:\n    name: test\n    host: %s\n    token: synthetic-token\ndefault: test\n", server.URL)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rootCmd.SetOut(&strings.Builder{})
+	rootCmd.SetArgs([]string{"--config", configPath, "repo", "list", "--json", "name"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("repo list: %v", err)
+	}
+	if activityRequested {
+		t.Fatal("activity endpoint called without requesting pushedAt")
 	}
 }
 
