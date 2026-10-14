@@ -1,19 +1,61 @@
 name: release
 on:
-  push:
-    tags:
-      - "v*"
+  release:
+    types: [published]
 permissions:
   contents: write
-  id-token: write
-  attestations: write
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: windows
+            goarch: amd64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
     steps:
       - uses: actions/checkout@v4
-      - uses: cli/gh-extension-precompile@v2
         with:
-          generate_attestations: true
-          go_version_file: go.mod
+          ref: refs/tags/${{ github.event.release.tag_name }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build release asset
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          version="${RELEASE_TAG##*/}"
+          extension=""
+          if [[ "$GOOS" == "windows" ]]; then
+            extension=".exe"
+          fi
+          asset="gh-tea-${version}-${GOOS}-${GOARCH}${extension}"
+          mkdir -p dist
+          go build -trimpath -o "dist/$asset" .
+
+      - name: Upload release asset
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          version="${RELEASE_TAG##*/}"
+          extension=""
+          if [[ "$GOOS" == "windows" ]]; then
+            extension=".exe"
+          fi
+          asset="gh-tea-${version}-${GOOS}-${GOARCH}${extension}"
+          test -f "dist/$asset"
+          gh release upload -- "$RELEASE_TAG" "dist/$asset"
