@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -393,16 +395,19 @@ func cloneRepo(cmd *cobra.Command, cloneURL, name, dir string) error {
 }
 
 func repoBrowseRun(_ *cobra.Command, _ []string) error {
-	item, owner, name, err := tea.Resolve(cfg, useFlag, repoFlag)
+	client, err := repoClient()
 	if err != nil {
 		return err
 	}
-	base, err := url.Parse(item.Host)
+	owner, name, err := repoCoordinates(nil)
 	if err != nil {
 		return err
 	}
-	base.Path = strings.TrimSuffix(base.Path, "/") + "/" + url.PathEscape(owner) + "/" + url.PathEscape(name)
-	return browseRepo(base.String())
+	item, _, err := client.GetRepo(owner, name)
+	if err != nil {
+		return err
+	}
+	return browseRepo(item.HTMLURL)
 }
 
 func browseRepo(pageURL string) error { return repoBrowserOpen(pageURL) }
@@ -435,19 +440,111 @@ func validateRepoJSONFields(fields []string) error {
 }
 
 func writeRepoJSON(cmd *cobra.Command, repos []*gitea.Repository, fields []string, single bool) error {
+	var item config.TeaItem
+	if containsRepoField(fields, "pushedAt") {
+		var err error
+		item, err = repoResolveTea()
+		if err != nil {
+			return err
+		}
+	}
+	project := func(repo *gitea.Repository) (map[string]any, error) {
+		var pushedAt *time.Time
+		if containsRepoField(fields, "pushedAt") {
+			var err error
+			pushedAt, err = repoPushedAt(cmd.Context(), item, repo.FullName)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return projectRepoFields(repo, fields, pushedAt), nil
+	}
 	encoder := json.NewEncoder(cmd.OutOrStdout())
 	encoder.SetIndent("", "  ")
 	if single && len(repos) == 1 {
-		return encoder.Encode(projectRepoFields(repos[0], fields))
+		result, err := project(repos[0])
+		if err != nil {
+			return err
+		}
+		return encoder.Encode(result)
 	}
 	rows := make([]map[string]any, 0, len(repos))
 	for _, repo := range repos {
-		rows = append(rows, projectRepoFields(repo, fields))
+		result, err := project(repo)
+		if err != nil {
+			return err
+		}
+		rows = append(rows, result)
 	}
 	return encoder.Encode(rows)
 }
 
-func projectRepoFields(repo *gitea.Repository, fields []string) map[string]any {
+func containsRepoField(fields []string, field string) bool {
+	for _, candidate := range fields {
+		if candidate == field {
+			return true
+		}
+	}
+	return false
+}
+
+type repoActivity struct {
+	OpType  string    `json:"op_type"`
+	Created time.Time `json:"created"`
+}
+
+func repoPushedAt(ctx context.Context, item config.TeaItem, fullName string) (*time.Time, error) {
+	owner, name, err := splitRepoArg(fullName)
+	if err != nil {
+		return nil, err
+	}
+	host, err := url.Parse(item.Host)
+	if err != nil {
+		return nil, err
+	}
+	const pageSize = 50
+	for page := 1; ; page++ {
+		endpoint := *host
+		endpoint.Path = strings.TrimSuffix(endpoint.Path, "/") + "/api/v1/repos/" +
+			url.PathEscape(owner) + "/" + url.PathEscape(name) + "/activities/feeds"
+		query := endpoint.Query()
+		query.Set("page", fmt.Sprint(page))
+		query.Set("limit", fmt.Sprint(pageSize))
+		endpoint.RawQuery = query.Encode()
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+		if err != nil {
+			return nil, err
+		}
+		request.Header.Set("Authorization", "token "+item.Token)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			return nil, err
+		}
+		if response.StatusCode != http.StatusOK {
+			response.Body.Close()
+			return nil, fmt.Errorf("get repository activities: server returned HTTP %d", response.StatusCode)
+		}
+		var activities []repoActivity
+		decodeErr := json.NewDecoder(response.Body).Decode(&activities)
+		closeErr := response.Body.Close()
+		if decodeErr != nil {
+			return nil, fmt.Errorf("decode repository activities: %w", decodeErr)
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		if len(activities) == 0 {
+			return nil, nil
+		}
+		for _, activity := range activities {
+			if activity.OpType == "commit_repo" || activity.OpType == "push_tag" {
+				return &activity.Created, nil
+			}
+		}
+	}
+}
+
+func projectRepoFields(repo *gitea.Repository, fields []string, pushedAt *time.Time) map[string]any {
 	result := make(map[string]any, len(fields))
 	for _, field := range fields {
 		switch field {
@@ -472,7 +569,11 @@ func projectRepoFields(repo *gitea.Repository, fields []string) map[string]any {
 		case "updatedAt":
 			result[field] = repo.Updated.Format(time.RFC3339)
 		case "pushedAt":
-			result[field] = nil
+			if pushedAt == nil {
+				result[field] = nil
+			} else {
+				result[field] = pushedAt.Format(time.RFC3339)
+			}
 		case "defaultBranchRef.name":
 			if repo.DefaultBranch == "" {
 				result["defaultBranchRef"] = nil
@@ -483,3 +584,4 @@ func projectRepoFields(repo *gitea.Repository, fields []string) map[string]any {
 	}
 	return result
 }
+
