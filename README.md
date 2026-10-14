@@ -247,7 +247,7 @@ gh tea repo view alice/demo --use work --json nameWithOwner,defaultBranchRef.nam
 | Issue | `number`, `title`, `state`, `url`, `createdAt`, `updatedAt`, `closedAt`, `author.login`, `labels[].name`, `assignees[].login`, `milestone.title`, `body` |
 | 仓库 | `name`, `nameWithOwner`, `description`, `visibility`, `isPrivate`, `url`, `updatedAt`, `pushedAt`, `defaultBranchRef.name` |
 
-`pushedAt` 来自最近一次 `commit_repo` 或 `push_tag` 仓库活动的时间，没有此类活动时为 `null`。仅请求这个字段时才额外查询活动接口，大批量列出仓库时会增加请求数量。
+`pushedAt` 是当前账号可见的最近一次 `commit_repo` 或 `push_tag` 仓库活动时间；没有可见记录时为 `null`。**它不保证等于仓库实际最后推送时间**：Gitea 会按活动隐私过滤记录，也可能清理历史活动，因此可能返回旧时间或 `null`。不要用它判断仓库是否从未推送，或作为同步完整性的依据。仅请求这个字段时才额外查询活动接口，大批量列出仓库时会增加请求数量。
 
 非交互运行时：
 
