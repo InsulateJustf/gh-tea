@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -645,9 +645,11 @@ func TestIssueViewJSONCommentsPreserveSourceDataAndFetchAllPages(t *testing.T) {
 	var got struct {
 		Title    string `json:"title"`
 		Comments []struct {
-			ID        json.RawMessage `json:"id"`
-			Author    *struct{ Login string `json:"login"` } `json:"author"`
-			Body      string `json:"body"`
+			ID     json.RawMessage `json:"id"`
+			Author *struct {
+				Login string `json:"login"`
+			} `json:"author"`
+			Body      string  `json:"body"`
 			CreatedAt *string `json:"createdAt"`
 			UpdatedAt *string `json:"updatedAt"`
 			URL       *string `json:"url"`
@@ -668,6 +670,63 @@ func TestIssueViewJSONCommentsPreserveSourceDataAndFetchAllPages(t *testing.T) {
 		last.UpdatedAt == nil || *last.UpdatedAt != "2026-01-03T04:05:06+01:00" ||
 		last.URL == nil || *last.URL != "https://example/comments/9007199254740993" {
 		t.Fatalf("last comment = %#v", last)
+	}
+}
+func TestIssueViewJSONCommentsFetchesEmptyPageAfterFullPage(t *testing.T) {
+	resetIssueCLIState(t)
+	var commentRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/version":
+			fmt.Fprint(w, `{"version":"1.22.0"}`)
+		case "/api/v1/repos/alice/project/issues/17":
+			fmt.Fprint(w, `{"number":17,"title":"Issue","state":"open"}`)
+		case "/api/v1/repos/alice/project/issues/17/comments":
+			commentRequests++
+			if r.URL.Query().Get("page") == "1" {
+				comments := make([]map[string]any, 50)
+				for i := range comments {
+					comments[i] = map[string]any{"id": i + 1, "body": fmt.Sprintf("comment-%d", i+1)}
+				}
+				_ = json.NewEncoder(w).Encode(comments)
+				return
+			}
+			fmt.Fprint(w, `[]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	configYAML := fmt.Sprintf("tea:\n  test:\n    name: test\n    host: %s\n    token: synthetic-token\ndefault: test\n", server.URL)
+	if err := os.WriteFile(configPath, []byte(configYAML), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr strings.Builder
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetErr(&stderr)
+	rootCmd.SetArgs([]string{"--config", configPath, "issue", "view", "17", "--repo", "alice/project", "--json", "comments"})
+	t.Cleanup(func() {
+		rootCmd.SetArgs(nil)
+		rootCmd.SetOut(os.Stdout)
+		rootCmd.SetErr(os.Stderr)
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("issue view: %v (stderr: %s)", err, stderr.String())
+	}
+	var got struct {
+		Comments []struct {
+			Body string `json:"body"`
+		} `json:"comments"`
+	}
+	if err := json.Unmarshal([]byte(stdout.String()), &got); err != nil {
+		t.Fatalf("view JSON is invalid: %v: %s", err, stdout.String())
+	}
+	if len(got.Comments) != 50 || commentRequests != 2 {
+		t.Fatalf("comments/request count = %d/%d", len(got.Comments), commentRequests)
+	}
+	if got.Comments[0].Body != "comment-1" || got.Comments[49].Body != "comment-50" {
+		t.Fatalf("comments = first %q, last %q", got.Comments[0].Body, got.Comments[49].Body)
 	}
 }
 

@@ -8,10 +8,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
-	"slices"
 	"time"
 
 	"code.gitea.io/sdk/gitea"
@@ -148,7 +148,7 @@ func issueListRun(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if issueListJSON != "" {
-		return writeIssueJSON(cmd, issues, jsonFields, false)
+		return writeIssueJSON(cmd, issues, jsonFields)
 	}
 	for _, item := range issues {
 		fmt.Fprintf(cmd.OutOrStdout(), "%d\t%s\t%s\n", item.Index, item.State, item.Title)
@@ -492,12 +492,9 @@ func validateIssueJSONFields(fields []string, available string) error {
 	return nil
 }
 
-func writeIssueJSON(cmd *cobra.Command, issues []*gitea.Issue, selected []string, single bool) error {
+func writeIssueJSON(cmd *cobra.Command, issues []*gitea.Issue, selected []string) error {
 	encoder := json.NewEncoder(cmd.OutOrStdout())
 	encoder.SetIndent("", "  ")
-	if single && len(issues) == 1 {
-		return encoder.Encode(projectIssueFields(issues[0], selected))
-	}
 	rows := make([]map[string]any, 0, len(issues))
 	for _, item := range issues {
 		rows = append(rows, projectIssueFields(item, selected))
@@ -524,12 +521,12 @@ type issueJSONCommentAuthor struct {
 }
 
 type issueJSONComment struct {
-	ID        int64                  `json:"id"`
+	ID        int64                   `json:"id"`
 	Author    *issueJSONCommentAuthor `json:"author"`
-	Body      string                 `json:"body"`
-	CreatedAt *string                `json:"createdAt"`
-	UpdatedAt *string                `json:"updatedAt"`
-	URL       *string                `json:"url"`
+	Body      string                  `json:"body"`
+	CreatedAt *string                 `json:"createdAt"`
+	UpdatedAt *string                 `json:"updatedAt"`
+	URL       *string                 `json:"url"`
 }
 
 func projectIssueComments(comments []*gitea.Comment) []issueJSONComment {
