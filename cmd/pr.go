@@ -588,6 +588,9 @@ func projectPRViewFields(pr *prViewItem, fields []string) map[string]any {
 func prViewPages[T any](client *http.Client, token, endpoint string) ([]T, error) {
 	const pageSize = 50
 	var all []T
+	// Visible page length is only a lower bound on the server's page size:
+	// Gitea can clamp limit and filter pending reviews after pagination.
+	observedPageSize := int64(1)
 	for page := 1; ; {
 		requestURL := endpoint + "?limit=" + strconv.Itoa(pageSize) + "&page=" + strconv.Itoa(page)
 		request, err := http.NewRequest(http.MethodGet, requestURL, nil)
@@ -618,6 +621,20 @@ func prViewPages[T any](client *http.Client, token, endpoint string) ([]T, error
 				return nil, fmt.Errorf("invalid next page %d after page %d", nextPage, page)
 			}
 			page = nextPage
+			continue
+		}
+		if count := response.Header.Get("X-Total-Count"); count != "" {
+			total, err := strconv.ParseInt(count, 10, 64)
+			if err != nil || total < 0 {
+				return nil, fmt.Errorf("invalid total count %q", count)
+			}
+			observedPageSize = max(observedPageSize, int64(len(items)))
+			// Also handles unpaged issue comments returned in one response.
+			// A conservative page bound preserves empty, filtered review pages.
+			if total == 0 || int64(page) >= 1+(total-1)/observedPageSize {
+				break
+			}
+			page++
 			continue
 		}
 		if len(items) < pageSize {

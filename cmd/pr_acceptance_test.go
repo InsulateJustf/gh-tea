@@ -600,9 +600,9 @@ func TestPRDiffBuiltCLIUsesTeaAndPreservesFixtureBytes(t *testing.T) {
 			t.Errorf("Authorization = %q", r.Header.Get("Authorization"))
 		}
 		switch r.URL.Path {
-		case "/api/v1/repos/alice/project/pulls/12":
-			fmt.Fprint(w, `{"number":12,"state":"open"}`)
-		case "/api/v1/repos/alice/project/pulls/12.diff":
+		case "/api/v1/repos/alice/project/pulls/9223372036854775807":
+			fmt.Fprint(w, `{"number":9223372036854775807,"state":"open"}`)
+		case "/api/v1/repos/alice/project/pulls/9223372036854775807.diff":
 			if r.URL.Query().Get("binary") != "true" {
 				t.Errorf("binary query = %q", r.URL.RawQuery)
 			}
@@ -618,7 +618,12 @@ func TestPRDiffBuiltCLIUsesTeaAndPreservesFixtureBytes(t *testing.T) {
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build CLI: %v\n%s", err, output)
 	}
-	process := exec.Command(binary, "--config", prTestConfig(t, server), "--use", "test", "pr", "diff", "12", "--repo", "alice/project")
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	content := fmt.Sprintf("tea:\n  test:\n    name: test\n    host: %s\n    token: synthetic-token\n  wrong:\n    name: wrong\n    host: http://127.0.0.1:1\n    token: wrong-token\ndefault: wrong\n", server.URL)
+	if err := os.WriteFile(configPath, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	process := exec.Command(binary, "--config", configPath, "--use", "test", "pr", "diff", "9223372036854775807", "--repo", "alice/project")
 	stdout, err := process.Output()
 	if err != nil {
 		exitErr, ok := err.(*exec.ExitError)

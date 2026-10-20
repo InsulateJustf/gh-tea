@@ -1,6 +1,6 @@
 # gh-tea
 
-在终端里用熟悉的 `gh` 风格命令管理 **Gitea** 上的 issue、PR 列表和仓库。
+在终端里用熟悉的 `gh` 风格命令管理 **Gitea** 上的 issue、PR 和仓库。
 
 这是 [GitHub CLI (`gh`)](https://cli.github.com/) 的扩展：把 `gh issue list` 换成 `gh tea issue list`，目标就变成你配置的 Gitea 实例。它支持多个实例，但只实现 `gh` 的实用子集，**不是完整的 GitHub CLI 兼容层**。
 
@@ -287,6 +287,8 @@ Issue JSON view 会先取得全部选中数据再输出；任一评论页失败�
 PR list 与 PR view 的 `number` 都是正 int64 JSON 整数；PR view 的基础字段按选中字段投影，缺失数据为 `null` 或空数组。`state` 使用服务端 `merged` 标志规范为 `open` / `closed` / `merged`；`isDraft` 来自服务端 `draft`，不从标题推断；`mergeable` 仅表示服务端字段，不代表保护规则或安全合并结论。作者、标签和分支名的来源与 PR list 相同。
 
 PR view 的所选字段始终存在；缺失标量元数据为 `null`，集合为空时为 `[]`。`files` 为 `{path:string, previousPath:string|null, status:string, additions:非负整数, deletions:非负整数}` 数组，保留 Gitea 原始 status。`comments` 为 `{id, author, body, createdAt, updatedAt, url}` 数组，`reviews` 为 `{id, author, body, state, submittedAt, commitOid, url, stale, official, dismissed}` 数组，`reviewComments` 为 `{id, reviewId, author, body, createdAt, updatedAt, url, path, position, originalPosition}` 数组；作者结构为 `{"login":"用户名"}` 或 `null`，各时间为 RFC3339 或 `null`，URL、`previousPath`、`path`、位置元数据不可得时为 `null`。所有讨论及 review ID 都是正 int64 JSON 整数（无损），位置为非负 JSON 整数或 `null`；位置是 diff 位置，不是源文件行号，不合成 GitHub side/reply。正文不截断、不去空白，集合及每页保留服务端顺序；未选集合不会读取。`reviewComments` 需要先取得所选 reviews 来获得 review ID，再逐个读取每个 review 的完整行内评论。任何已选集合读取失败都会非零退出并且不输出部分 JSON。通用 `comments` 是 PR 对话评论，不包括行内 review 评论。此能力只提供 CLI 后端，不表示消费者插件已支持。
+
+PR view 的集合读取优先遵循分页 `Link`；只有 `X-Total-Count` 时也会继续读取短页或空评审页，避免服务端过滤待提交评审或限制页大小造成遗漏。普通评论接口一次返回全集时，不重复读取。分页并非事务快照。
 
 PR list 的所选字段始终存在：`number` 是正 int64 JSON 整数，`title` 是字符串，`state` 根据服务端合并标志规范化为 `open` / `closed` / `merged`。`isDraft` 使用服务端 `draft` 布尔值，缺失时为 `null`，不从标题前缀推断。`url`、`createdAt` / `updatedAt`、`baseRefName` / `headRefName` 分别来自 HTML URL、RFC3339 时间、`base.ref` / `head.ref`，缺失时为 `null`。`author.login` 投影为 `author: {"login":"用户名"}` 或 `null`；`labels[].name` 投影为 `labels: [{"name":"标签"}]`，缺失标签为 `[]`。无匹配输出 `[]`。未知字段及 `files`、`comments`、`reviews`、`reviewComments` 等 view-only 字段均被拒绝。所需数据页失败时非零退出，向 stderr 报错，不输出部分成功 JSON；分页不保证事务快照。这里只提供后端 PR 列表能力，不表示消费者插件已支持。
 

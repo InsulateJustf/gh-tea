@@ -29,6 +29,7 @@ func resetPRCLIState(t *testing.T) {
 		prListState, prListAuthor, prListLabels, prListLimit, prListJSON, prViewJSON = "open", "", nil, 30, "", ""
 	}
 	reset()
+	configFlag = filepath.Join(t.TempDir(), "config.yaml")
 	t.Cleanup(reset)
 }
 
