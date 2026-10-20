@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -555,4 +556,185 @@ func TestPRViewRejectsUnknownFieldsBeforeRequest(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), `unknown JSON field "unexpected"`) {
 		t.Fatalf("error = %v", err)
 	}
+}
+func TestPRDiffWritesOriginalBinaryUnifiedDiffBytes(t *testing.T) {
+	resetPRCLIState(t)
+	diff := []byte("diff --git \"a/路径 with \\\"quotes\\\".bin\" \"b/路径 with \\\"quotes\\\".bin\"\nindex 0000000..1111111\nGIT binary patch\nliteral 3\nKcmZQzU|?Vg000000000\n")
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.RequestURI())
+		if r.Header.Get("Authorization") != "token synthetic-token" {
+			t.Errorf("Authorization = %q", r.Header.Get("Authorization"))
+		}
+		switch r.URL.Path {
+		case "/api/v1/repos/alice/project/pulls/12":
+			fmt.Fprint(w, `{"number":12,"state":"open"}`)
+		case "/api/v1/repos/alice/project/pulls/12.diff":
+			if r.URL.Query().Get("binary") != "true" {
+				t.Errorf("binary query = %q, want true", r.URL.RawQuery)
+			}
+			w.Write(diff)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	var stdout strings.Builder
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"--config", prTestConfig(t, server), "pr", "diff", "12", "--repo", "alice/project"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got := []byte(stdout.String()); string(got) != string(diff) {
+		t.Fatalf("diff bytes = %q, want exact response %q", got, diff)
+	}
+	if !containsRequest(requests, "/api/v1/repos/alice/project/pulls/12.diff?binary=true") {
+		t.Fatalf("requests = %v; expected binary diff endpoint", requests)
+	}
+}
+
+func TestPRDiffBuiltCLIUsesTeaAndPreservesFixtureBytes(t *testing.T) {
+	diff := []byte("diff --git \"a/文件 name \\\"quoted\\\".dat\" \"b/文件 name \\\"quoted\\\".dat\"\nindex 0000000..1111111\nGIT binary patch\nliteral 4\nKcmZQzU|?Vg000000000\n")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "token synthetic-token" {
+			t.Errorf("Authorization = %q", r.Header.Get("Authorization"))
+		}
+		switch r.URL.Path {
+		case "/api/v1/repos/alice/project/pulls/12":
+			fmt.Fprint(w, `{"number":12,"state":"open"}`)
+		case "/api/v1/repos/alice/project/pulls/12.diff":
+			if r.URL.Query().Get("binary") != "true" {
+				t.Errorf("binary query = %q", r.URL.RawQuery)
+			}
+			w.Write(diff)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	binary := filepath.Join(t.TempDir(), "gh-tea")
+	build := exec.Command("go", "build", "-o", binary, "..")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build CLI: %v\n%s", err, output)
+	}
+	process := exec.Command(binary, "--config", prTestConfig(t, server), "--use", "test", "pr", "diff", "12", "--repo", "alice/project")
+	stdout, err := process.Output()
+	if err != nil {
+		exitErr, ok := err.(*exec.ExitError)
+		if ok {
+			t.Fatalf("CLI error = %v; stderr = %q", err, exitErr.Stderr)
+		}
+		t.Fatalf("CLI error = %v", err)
+	}
+	if string(stdout) != string(diff) {
+		t.Fatalf("CLI diff = %q, want exact fixture bytes %q", stdout, diff)
+	}
+}
+
+func TestPRDiffEmptyAndFailuresAreDistinct(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		diffStatus int
+		diffBody   string
+		pullStatus int
+		interrupt  bool
+		wantErr    string
+	}{
+		{name: "empty diff", diffStatus: http.StatusOK},
+		{name: "server failure", diffStatus: http.StatusForbidden, diffBody: "private PR", wantErr: "private PR"},
+		{name: "ordinary issue", pullStatus: http.StatusNotFound, diffStatus: http.StatusOK, diffBody: "must not be returned", wantErr: "get pull request"},
+		{name: "interrupted diff", interrupt: true, wantErr: "read pull request diff"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			resetPRCLIState(t)
+			oldSilenceUsage, oldSilenceErrors := rootCmd.SilenceUsage, rootCmd.SilenceErrors
+			rootCmd.SilenceUsage, rootCmd.SilenceErrors = true, true
+			t.Cleanup(func() { rootCmd.SilenceUsage, rootCmd.SilenceErrors = oldSilenceUsage, oldSilenceErrors })
+			var diffRequested bool
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/v1/repos/alice/project/pulls/12":
+					if test.pullStatus != 0 {
+						http.Error(w, "not a pull request", test.pullStatus)
+					} else {
+						fmt.Fprint(w, `{"number":12,"state":"open"}`)
+					}
+				case "/api/v1/repos/alice/project/pulls/12.diff":
+					diffRequested = true
+					if test.interrupt {
+						w.Header().Set("Content-Length", "100")
+						w.WriteHeader(http.StatusOK)
+						fmt.Fprint(w, "partial diff")
+						w.(http.Flusher).Flush()
+						conn, _, err := w.(http.Hijacker).Hijack()
+						if err != nil {
+							t.Errorf("hijack diff response: %v", err)
+							return
+						}
+						conn.Close()
+						return
+					}
+					w.WriteHeader(test.diffStatus)
+					fmt.Fprint(w, test.diffBody)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			configPath := prTestConfig(t, server)
+			var stdout strings.Builder
+			rootCmd.SetOut(&stdout)
+			rootCmd.SetArgs([]string{"--config", configPath, "pr", "diff", "12", "--repo", "alice/project"})
+			err := rootCmd.Execute()
+			if test.wantErr == "" {
+				if err != nil || stdout.Len() != 0 {
+					t.Fatalf("error = %v, stdout = %q; expected successful empty diff", err, stdout.String())
+				}
+			} else {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) || stdout.Len() != 0 {
+					t.Fatalf("error = %v, stdout = %q; expected failure with no output", err, stdout.String())
+				}
+				process := exec.Command(os.Args[0], "-test.run=^TestPRDiffFailureProcessHelper$")
+				process.Env = append(os.Environ(), "GH_TEA_PR_DIFF_TEST_CONFIG="+configPath, "GH_TEA_PR_DIFF_TEST_NUMBER=12")
+				processOutput, processErr := process.Output()
+				if len(processOutput) != 0 {
+					t.Fatalf("failed CLI process wrote to stdout: %s", processOutput)
+				}
+				exitErr, ok := processErr.(*exec.ExitError)
+				if !ok || exitErr.ExitCode() == 0 || !strings.Contains(string(exitErr.Stderr), test.wantErr) {
+					t.Fatalf("CLI process error = %v, stderr = %q; expected nonzero diagnostic containing %q", processErr, exitErr, test.wantErr)
+				}
+			}
+			if got := diffRequested; got != (test.pullStatus == 0) {
+				t.Fatalf("diff requested = %v, want %v", got, test.pullStatus == 0)
+			}
+		})
+	}
+}
+
+func TestPRDiffRejectsInvalidNumbers(t *testing.T) {
+	for _, number := range []string{"0", "-1", "9223372036854775808", "1.5"} {
+		t.Run(number, func(t *testing.T) {
+			resetPRCLIState(t)
+			args := []string{"pr", "diff", number, "--repo", "alice/project"}
+			if strings.HasPrefix(number, "-") {
+				args = []string{"--repo", "alice/project", "pr", "diff", "--", number}
+			}
+			rootCmd.SetArgs(args)
+			if err := rootCmd.Execute(); err == nil || !strings.Contains(err.Error(), "positive int64") {
+				t.Fatalf("error = %v; expected positive int64 validation", err)
+			}
+		})
+	}
+}
+
+func TestPRDiffFailureProcessHelper(t *testing.T) {
+	configPath := os.Getenv("GH_TEA_PR_DIFF_TEST_CONFIG")
+	if configPath == "" {
+		return
+	}
+	number := os.Getenv("GH_TEA_PR_DIFF_TEST_NUMBER")
+	os.Args = []string{"gh-tea-test", "--config", configPath, "pr", "diff", number, "--repo", "alice/project"}
+	Execute()
 }

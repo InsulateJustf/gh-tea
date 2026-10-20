@@ -135,6 +135,14 @@ gh tea pr view 12 --json number,title,state,isDraft,files,comments,reviews,revie
 
 `pr view` 只查询真实 Pull Request；普通 Issue、无权访问或不存在的 PR 会报错。`--json` 支持下表中的 PR view 字段，讨论集合只会在明确选择时请求。
 
+### PR diff
+
+```sh
+gh tea pr diff 12 --use work --repo alice/demo
+```
+
+`pr diff` 将后端返回的原始 unified diff 字节直接写入 stdout，包括二进制 patch；空 diff 会以空 stdout 成功返回。编号不存在、无权访问或对应普通 Issue 时会报错，不输出部分 diff。
+
 ### 仓库
 
 ```sh
@@ -293,7 +301,7 @@ PR list 的所选字段始终存在：`number` 是正 int64 JSON 整数，`title
 
 ## 支持范围与排错
 
-支持 `auth`、实例管理、八个 `issue` 子命令、`pr list`、`pr view` 和九个 `repo` 子命令。PR diff/写操作、release、迁移、镜像、gist 和通用 API 透传暂不支持。`--project`、`--template/-t`、`--jq` 等未实现的 flag 会报错，不会悄悄忽略。完整参数以 `gh tea <命令> --help` 为准。
+支持 `auth`、实例管理、八个 `issue` 子命令、`pr list`、`pr view`、`pr diff` 和九个 `repo` 子命令。PR 写操作、release、迁移、镜像、gist 和通用 API 透传暂不支持。`--project`、`--template/-t`、`--jq` 等未实现的 flag 会报错，不会悄悄忽略。完整参数以 `gh tea <命令> --help` 为准。
 
 全局参数：`--use`、`--repo/-R`、`--config/-c`、`--debug/-d`。
 

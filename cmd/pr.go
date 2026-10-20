@@ -29,7 +29,6 @@ var (
 
 func init() {
 	rootCmd.AddCommand(prCmd)
-	prCmd.AddCommand(prListCmd, prViewCmd)
 	prListCmd.SetFlagErrorFunc(issueFlagError)
 	prListCmd.Flags().StringVar(&prListState, "state", "open", "filter by pull request state (open, closed, merged, all)")
 	prListCmd.Flags().IntVar(&prListLimit, "limit", 30, "maximum number of pull requests to list")
@@ -38,13 +37,66 @@ func init() {
 	prListCmd.Flags().StringVar(&prListJSON, "json", "", "output selected fields as JSON")
 	prViewCmd.SetFlagErrorFunc(issueFlagError)
 	prViewCmd.Flags().StringVar(&prViewJSON, "json", "", "output selected fields as JSON")
+	prDiffCmd.SetFlagErrorFunc(issueFlagError)
+	prCmd.AddCommand(prListCmd, prViewCmd, prDiffCmd)
 }
 
 var (
 	prCmd     = &cobra.Command{Use: "pr", Short: "Work with pull requests", Args: cobra.NoArgs}
 	prListCmd = &cobra.Command{Use: "list", Short: "List pull requests in a repository", Args: cobra.NoArgs, RunE: prListRun}
 	prViewCmd = &cobra.Command{Use: "view <number>", Short: "View a pull request", Args: cobra.ExactArgs(1), RunE: prViewRun}
+	prDiffCmd = &cobra.Command{Use: "diff <number>", Short: "Print the raw unified diff of a pull request", Args: cobra.ExactArgs(1), RunE: prDiffRun}
 )
+
+func prDiffRun(cmd *cobra.Command, args []string) error {
+	index, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil || index <= 0 {
+		return fmt.Errorf("pull request number must be a positive int64")
+	}
+	teaItem, owner, repo, err := tea.Resolve(cfg, useFlag, repoFlag)
+	if err != nil {
+		return err
+	}
+	base, err := url.JoinPath(teaItem.Host, "api/v1/repos", url.PathEscape(owner), url.PathEscape(repo))
+	if err != nil {
+		return err
+	}
+	client := &http.Client{}
+	pullRequestURL := base + "/pulls/" + strconv.FormatInt(index, 10)
+	var pullRequest prViewItem
+	if err := prGetJSON(client, teaItem.Token, pullRequestURL, &pullRequest); err != nil {
+		return fmt.Errorf("get pull request #%d: %w", index, err)
+	}
+	if pullRequest.Number <= 0 {
+		return fmt.Errorf("get pull request #%d: server returned invalid pull request number", index)
+	}
+
+	request, err := http.NewRequest(http.MethodGet, pullRequestURL+".diff?binary=true", nil)
+	if err != nil {
+		return fmt.Errorf("get pull request diff: %w", err)
+	}
+	request.Header.Set("Authorization", "token "+teaItem.Token)
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("get pull request diff: %w", err)
+	}
+	diff, readErr := io.ReadAll(response.Body)
+	response.Body.Close()
+	if readErr != nil {
+		return fmt.Errorf("read pull request diff: %w", readErr)
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("get pull request diff: %s: %s", response.Status, strings.TrimSpace(string(diff)))
+	}
+	n, err := cmd.OutOrStdout().Write(diff)
+	if err != nil {
+		return fmt.Errorf("write pull request diff: %w", err)
+	}
+	if n != len(diff) {
+		return fmt.Errorf("write pull request diff: %w", io.ErrShortWrite)
+	}
+	return nil
+}
 
 type prListItem struct {
 	Number  int64      `json:"number"`
