@@ -325,7 +325,7 @@ func TestPRViewFollowsShortPagesAndUsesNextPageReviewIDs(t *testing.T) {
 			fmt.Fprint(w, `{"number":12,"state":"open"}`)
 		case "/api/v1/repos/alice/project/pulls/12/reviews":
 			if r.URL.Query().Get("page") == "1" {
-				w.Header().Set("Link", `<`+server.URL+`/api/v1/repos/alice/project/pulls/12/reviews?limit=50&page=2>; rel="next"`)
+				w.Header().Set("Link", `<https://attacker.invalid/api/v1/repos/alice/project/pulls/12/reviews?limit=50&page=2>; rel="next"`)
 				fmt.Fprint(w, `[{"id":91}]`)
 			} else {
 				fmt.Fprint(w, `[{"id":9223372036854775807}]`)
@@ -367,7 +367,7 @@ func TestPRViewShortPageNextFailureWritesNoJSON(t *testing.T) {
 			return
 		}
 		if r.URL.Query().Get("page") == "1" {
-			w.Header().Set("Link", `<`+server.URL+`/api/v1/repos/alice/project/pulls/12/files?limit=50&page=2>; rel="next"`)
+			w.Header().Set("Link", `<https://attacker.invalid/api/v1/repos/alice/project/pulls/12/files?limit=50&page=2>; rel="next"`)
 			fmt.Fprint(w, `[{"filename":"first","status":"modified","additions":1,"deletions":0}]`)
 			return
 		}

@@ -513,14 +513,7 @@ func prViewAuthor(author *struct {
 }
 
 func projectPRViewFields(pr *prViewItem, fields []string) map[string]any {
-	common := make([]string, 0, len(fields))
-	for _, field := range fields {
-		switch field {
-		case "number", "title", "state", "isDraft", "url", "createdAt", "updatedAt", "author.login", "labels[].name", "baseRefName", "headRefName":
-			common = append(common, field)
-		}
-	}
-	out := projectPRFields(&pr.prListItem, common)
+	out := projectPRFields(&pr.prListItem, fields)
 	for _, field := range fields {
 		switch field {
 		case "closedAt":
@@ -567,8 +560,11 @@ func prViewPages[T any](client *http.Client, token, endpoint string) ([]T, error
 			return nil, fmt.Errorf("decode response: %w", err)
 		}
 		all = append(all, items...)
-		nextPage, hasNext := prViewNextPage(response.Header.Values("Link"), endpoint, page)
+		nextPage, hasNext := prNextPage(response.Header.Values("Link"))
 		if hasNext {
+			if nextPage <= page {
+				return nil, fmt.Errorf("invalid next page %d after page %d", nextPage, page)
+			}
 			page = nextPage
 			continue
 		}
@@ -578,36 +574,4 @@ func prViewPages[T any](client *http.Client, token, endpoint string) ([]T, error
 		page++
 	}
 	return all, nil
-}
-
-func prViewNextPage(headers []string, endpoint string, currentPage int) (int, bool) {
-	base, err := url.Parse(endpoint)
-	if err != nil {
-		return 0, false
-	}
-	for _, header := range headers {
-		for _, link := range strings.Split(header, ",") {
-			open, close := strings.IndexByte(link, '<'), strings.IndexByte(link, '>')
-			if open < 0 || close <= open {
-				continue
-			}
-			params := link[close+1:]
-			if !strings.Contains(params, `rel="next"`) && !strings.Contains(params, "rel=next") {
-				continue
-			}
-			target, err := base.Parse(link[open+1 : close])
-			if err != nil || target.Scheme != base.Scheme || target.Host != base.Host || target.Path != base.Path {
-				continue
-			}
-			query := target.Query()
-			if len(query["page"]) != 1 {
-				continue
-			}
-			page, err := strconv.Atoi(query.Get("page"))
-			if err == nil && page > currentPage {
-				return page, true
-			}
-		}
-	}
-	return 0, false
 }
