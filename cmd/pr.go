@@ -16,6 +16,7 @@ import (
 )
 
 const prListJSONFields = "number,title,state,isDraft,url,createdAt,updatedAt,author.login,labels[].name,baseRefName,headRefName"
+const prViewJSONFields = "number,title,state,isDraft,url,createdAt,updatedAt,closedAt,author.login,labels[].name,baseRefName,headRefName,body,merged,mergedAt,mergeable,files,comments,reviews,reviewComments"
 
 var (
 	prListState  string
@@ -23,22 +24,26 @@ var (
 	prListLabels []string
 	prListLimit  int
 	prListJSON   string
+	prViewJSON   string
 )
 
 func init() {
 	rootCmd.AddCommand(prCmd)
-	prCmd.AddCommand(prListCmd)
+	prCmd.AddCommand(prListCmd, prViewCmd)
 	prListCmd.SetFlagErrorFunc(issueFlagError)
 	prListCmd.Flags().StringVar(&prListState, "state", "open", "filter by pull request state (open, closed, merged, all)")
 	prListCmd.Flags().IntVar(&prListLimit, "limit", 30, "maximum number of pull requests to list")
 	prListCmd.Flags().StringVar(&prListAuthor, "author", "", "filter by author")
 	prListCmd.Flags().StringArrayVar(&prListLabels, "label", nil, "filter by all comma-separated labels")
 	prListCmd.Flags().StringVar(&prListJSON, "json", "", "output selected fields as JSON")
+	prViewCmd.SetFlagErrorFunc(issueFlagError)
+	prViewCmd.Flags().StringVar(&prViewJSON, "json", "", "output selected fields as JSON")
 }
 
 var (
 	prCmd     = &cobra.Command{Use: "pr", Short: "Work with pull requests", Args: cobra.NoArgs}
 	prListCmd = &cobra.Command{Use: "list", Short: "List pull requests in a repository", Args: cobra.NoArgs, RunE: prListRun}
+	prViewCmd = &cobra.Command{Use: "view <number>", Short: "View a pull request", Args: cobra.ExactArgs(1), RunE: prViewRun}
 )
 
 type prListItem struct {
@@ -315,4 +320,310 @@ func projectPRFields(pr *prListItem, fields []string) map[string]any {
 		}
 	}
 	return projected
+}
+type prViewItem struct {
+	Number    int64      `json:"number"`
+	Title     string     `json:"title"`
+	State     string     `json:"state"`
+	Merged    bool       `json:"merged"`
+	Draft     *bool      `json:"draft"`
+	URL       *string    `json:"html_url"`
+	Created   *time.Time `json:"created_at"`
+	Updated   *time.Time `json:"updated_at"`
+	Closed    *time.Time `json:"closed_at"`
+	MergedAt  *time.Time `json:"merged_at"`
+	Body      string     `json:"body"`
+	Mergeable *bool      `json:"mergeable"`
+	Author    *struct {
+		Login string `json:"login"`
+	} `json:"user"`
+	Labels []struct {
+		Name string `json:"name"`
+	} `json:"labels"`
+	Base *struct {
+		Ref *string `json:"ref"`
+	} `json:"base"`
+	Head *struct {
+		Ref *string `json:"ref"`
+	} `json:"head"`
+}
+
+type prViewFile struct {
+	Path         string `json:"filename"`
+	PreviousPath *string `json:"previous_filename"`
+	Status       string `json:"status"`
+	Additions    int64  `json:"additions"`
+	Deletions    int64  `json:"deletions"`
+}
+
+type prViewComment struct {
+	ID      int64      `json:"id"`
+	Author  *struct {
+		Login string `json:"login"`
+	} `json:"user"`
+	Body    string     `json:"body"`
+	Created *time.Time `json:"created_at"`
+	Updated *time.Time `json:"updated_at"`
+	URL     *string    `json:"html_url"`
+}
+
+type prViewReview struct {
+	ID         int64      `json:"id"`
+	Author     *struct {
+		Login string `json:"login"`
+	} `json:"user"`
+	Body       string     `json:"body"`
+	State      string     `json:"state"`
+	Submitted  *time.Time `json:"submitted_at"`
+	CommitOID  *string    `json:"commit_id"`
+	URL        *string    `json:"html_url"`
+	Stale      bool       `json:"stale"`
+	Official   bool       `json:"official"`
+	Dismissed  bool       `json:"dismissed"`
+}
+
+type prViewReviewComment struct {
+	ID              int64      `json:"id"`
+	ReviewID         int64      `json:"pull_request_review_id"`
+	Author          *struct {
+		Login string `json:"login"`
+	} `json:"user"`
+	Body             string     `json:"body"`
+	Created          *time.Time `json:"created_at"`
+	Updated          *time.Time `json:"updated_at"`
+	URL              *string    `json:"html_url"`
+	Path             *string    `json:"path"`
+	Position         *uint64    `json:"position"`
+	OriginalPosition *uint64    `json:"original_position"`
+}
+
+func prViewRun(cmd *cobra.Command, args []string) error {
+	index, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil || index <= 0 {
+		return fmt.Errorf("pull request number must be a positive int64")
+	}
+	var fields []string
+	if prViewJSON == "" {
+		fields = nil
+	} else {
+		fields = strings.Split(prViewJSON, ",")
+		if err := validatePRViewJSONFields(fields); err != nil {
+			return err
+		}
+	}
+	teaItem, owner, repo, err := tea.Resolve(cfg, useFlag, repoFlag)
+	if err != nil {
+		return err
+	}
+	base, err := url.JoinPath(teaItem.Host, "api/v1/repos", url.PathEscape(owner), url.PathEscape(repo))
+	if err != nil {
+		return err
+	}
+	client := &http.Client{}
+	endpoint := base + "/pulls/" + strconv.FormatInt(index, 10)
+	var pr prViewItem
+	if err := prGetJSON(client, teaItem.Token, endpoint, &pr); err != nil {
+		return fmt.Errorf("get pull request #%d: %w", index, err)
+	}
+	if pr.Number <= 0 {
+		return fmt.Errorf("get pull request #%d: server returned invalid pull request number", index)
+	}
+	if prViewJSON == "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s (%s)\n\n%s\n", pr.Title, prNormalizedState(&prListItem{State: pr.State, Merged: pr.Merged}), pr.Body)
+		return nil
+	}
+	output := projectPRViewFields(&pr, fields)
+	if containsPRField(fields, "files") {
+		files, err := prViewPages[prViewFile](client, teaItem.Token, base+"/pulls/"+strconv.FormatInt(index, 10)+"/files")
+		if err != nil {
+			return fmt.Errorf("get pull request files: %w", err)
+		}
+		rows := make([]map[string]any, 0, len(files))
+		for _, file := range files {
+			if file.Additions < 0 || file.Deletions < 0 {
+				return fmt.Errorf("get pull request files: invalid file counts for %q", file.Path)
+			}
+			rows = append(rows, map[string]any{"path": file.Path, "previousPath": file.PreviousPath, "status": file.Status, "additions": file.Additions, "deletions": file.Deletions})
+		}
+		output["files"] = rows
+	}
+	if containsPRField(fields, "comments") {
+		comments, err := prViewPages[prViewComment](client, teaItem.Token, base+"/issues/"+strconv.FormatInt(index, 10)+"/comments")
+		if err != nil {
+			return fmt.Errorf("get pull request comments: %w", err)
+		}
+		rows := make([]map[string]any, 0, len(comments))
+		for _, comment := range comments {
+			if comment.ID <= 0 {
+				return fmt.Errorf("get pull request comments: invalid comment id %d", comment.ID)
+			}
+			rows = append(rows, map[string]any{"id": comment.ID, "author": prViewAuthor(comment.Author), "body": comment.Body, "createdAt": comment.Created, "updatedAt": comment.Updated, "url": comment.URL})
+		}
+		output["comments"] = rows
+	}
+	if containsPRField(fields, "reviews") || containsPRField(fields, "reviewComments") {
+		reviews, err := prViewPages[prViewReview](client, teaItem.Token, base+"/pulls/"+strconv.FormatInt(index, 10)+"/reviews")
+		if err != nil {
+			return fmt.Errorf("get pull request reviews: %w", err)
+		}
+		if containsPRField(fields, "reviews") {
+			rows := make([]map[string]any, 0, len(reviews))
+			for _, review := range reviews {
+				if review.ID <= 0 {
+					return fmt.Errorf("get pull request reviews: invalid review id %d", review.ID)
+				}
+				rows = append(rows, map[string]any{"id": review.ID, "author": prViewAuthor(review.Author), "body": review.Body, "state": review.State, "submittedAt": review.Submitted, "commitOid": review.CommitOID, "url": review.URL, "stale": review.Stale, "official": review.Official, "dismissed": review.Dismissed})
+			}
+			output["reviews"] = rows
+		}
+		if containsPRField(fields, "reviewComments") {
+			rows := make([]map[string]any, 0)
+			for _, review := range reviews {
+				if review.ID <= 0 {
+					return fmt.Errorf("get pull request review comments: invalid review id %d", review.ID)
+				}
+				var comments []prViewReviewComment
+				if err := prGetJSON(client, teaItem.Token, base+"/pulls/"+strconv.FormatInt(index, 10)+"/reviews/"+strconv.FormatInt(review.ID, 10)+"/comments", &comments); err != nil {
+					return fmt.Errorf("get comments for review %d: %w", review.ID, err)
+				}
+				for _, comment := range comments {
+					if comment.ID <= 0 || comment.ReviewID <= 0 {
+						return fmt.Errorf("get comments for review %d: invalid comment metadata", review.ID)
+					}
+					rows = append(rows, map[string]any{"id": comment.ID, "reviewId": comment.ReviewID, "author": prViewAuthor(comment.Author), "body": comment.Body, "createdAt": comment.Created, "updatedAt": comment.Updated, "url": comment.URL, "path": comment.Path, "position": comment.Position, "originalPosition": comment.OriginalPosition})
+				}
+			}
+			output["reviewComments"] = rows
+		}
+	}
+	encoder := json.NewEncoder(cmd.OutOrStdout())
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(output)
+}
+
+func validatePRViewJSONFields(fields []string) error {
+	for _, field := range fields {
+		switch field {
+		case "number", "title", "state", "isDraft", "url", "createdAt", "updatedAt", "closedAt", "author.login", "labels[].name", "baseRefName", "headRefName", "body", "merged", "mergedAt", "mergeable", "files", "comments", "reviews", "reviewComments":
+		default:
+			return fmt.Errorf("unknown JSON field %q; available fields: %s", field, prViewJSONFields)
+		}
+	}
+	return nil
+}
+
+func containsPRField(fields []string, target string) bool {
+	for _, field := range fields {
+		if field == target {
+			return true
+		}
+	}
+	return false
+}
+
+func prViewAuthor(author *struct {
+	Login string `json:"login"`
+}) any {
+	if author == nil {
+		return nil
+	}
+	return map[string]string{"login": author.Login}
+}
+
+func projectPRViewFields(pr *prViewItem, fields []string) map[string]any {
+	out := make(map[string]any, len(fields))
+	for _, field := range fields {
+		switch field {
+		case "number":
+			out[field] = pr.Number
+		case "title":
+			out[field] = pr.Title
+		case "state":
+			out[field] = prNormalizedState(&prListItem{State: pr.State, Merged: pr.Merged})
+		case "isDraft":
+			out[field] = pr.Draft
+		case "url":
+			out[field] = pr.URL
+		case "createdAt":
+			out[field] = pr.Created
+		case "updatedAt":
+			out[field] = pr.Updated
+		case "closedAt":
+			out[field] = pr.Closed
+		case "author.login":
+			out["author"] = prViewAuthor(pr.Author)
+		case "labels[].name":
+			labels := make([]map[string]string, 0, len(pr.Labels))
+			for _, label := range pr.Labels {
+				labels = append(labels, map[string]string{"name": label.Name})
+			}
+			out["labels"] = labels
+		case "baseRefName":
+			if pr.Base == nil {
+				out[field] = nil
+			} else {
+				out[field] = pr.Base.Ref
+			}
+		case "headRefName":
+			if pr.Head == nil {
+				out[field] = nil
+			} else {
+				out[field] = pr.Head.Ref
+			}
+		case "body":
+			out[field] = pr.Body
+		case "merged":
+			out[field] = pr.Merged
+		case "mergedAt":
+			out[field] = pr.MergedAt
+		case "mergeable":
+			out[field] = pr.Mergeable
+		case "files", "comments", "reviews", "reviewComments":
+			out[field] = []map[string]any{}
+		}
+	}
+	return out
+}
+
+func prViewPages[T any](client *http.Client, token, endpoint string) ([]T, error) {
+	const pageSize = 50
+	var all []T
+	for page := 1; ; {
+		requestURL := endpoint + "?limit=" + strconv.Itoa(pageSize) + "&page=" + strconv.Itoa(page)
+		request, err := http.NewRequest(http.MethodGet, requestURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		request.Header.Set("Authorization", "token "+token)
+		response, err := client.Do(request)
+		if err != nil {
+			return nil, err
+		}
+		body, readErr := io.ReadAll(response.Body)
+		response.Body.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			return nil, fmt.Errorf("%s: %s", response.Status, strings.TrimSpace(string(body)))
+		}
+		var items []T
+		if err := json.Unmarshal(body, &items); err != nil {
+			return nil, fmt.Errorf("decode response: %w", err)
+		}
+		all = append(all, items...)
+		if len(items) == 0 || len(items) < pageSize {
+			break
+		}
+		nextPage, hasNext := prNextPage(response.Header.Values("Link"))
+		if hasNext {
+			if nextPage <= page {
+				return nil, fmt.Errorf("invalid next page %d after page %d", nextPage, page)
+			}
+			page = nextPage
+		} else {
+			page++
+		}
+	}
+	return all, nil
 }

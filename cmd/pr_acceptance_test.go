@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -218,5 +219,203 @@ func TestPRListProjectsMissingNestedRefsAsNull(t *testing.T) {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("JSON missing %q: %s", want, stdout.String())
 		}
+	}
+}
+func TestPRViewProjectsSelectedFieldsWithoutFetchingUnselectedCollections(t *testing.T) {
+	resetPRCLIState(t)
+	requests := make([]string, 0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.URL.Path)
+		switch r.URL.Path {
+		case "/api/v1/version":
+			fmt.Fprint(w, `{"version":"1.22.0"}`)
+		case "/api/v1/repos/alice/project/pulls/12":
+			fmt.Fprint(w, `{"number":12,"title":"keep  body","state":"closed","merged":true,"draft":false,"html_url":"https://tea.example/pr/12","created_at":"2026-01-02T03:04:05Z","updated_at":"2026-01-03T03:04:05Z","closed_at":"2026-01-04T03:04:05Z","merged_at":"2026-01-04T03:04:05Z","body":" original\nbody ","user":{"login":"alice"},"labels":[{"name":"bug"}],"base":{"ref":"main"},"head":{"ref":"fix"},"mergeable":true}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	var stdout strings.Builder
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"--config", prTestConfig(t, server), "pr", "view", "12", "--repo", "alice/project", "--json", "number,title,state,isDraft,url,createdAt,updatedAt,closedAt,author.login,labels[].name,baseRefName,headRefName,body,merged,mergedAt,mergeable"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"number": 12`, `"state": "merged"`, `"isDraft": false`, `"body": " original\nbody "`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("JSON missing %q: %s", want, stdout.String())
+		}
+	}
+	if len(requests) != 1 || requests[0] != "/api/v1/repos/alice/project/pulls/12" {
+		t.Fatalf("requests = %v; expected only selected PR", requests)
+	}
+}
+
+func TestPRViewDoesNotTreatIssueAsPullRequest(t *testing.T) {
+	resetPRCLIState(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/version" {
+			fmt.Fprint(w, `{"version":"1.22.0"}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	var stdout strings.Builder
+	oldSilenceUsage, oldSilenceErrors := rootCmd.SilenceUsage, rootCmd.SilenceErrors
+	rootCmd.SilenceUsage, rootCmd.SilenceErrors = true, true
+	t.Cleanup(func() { rootCmd.SilenceUsage, rootCmd.SilenceErrors = oldSilenceUsage, oldSilenceErrors })
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"--config", prTestConfig(t, server), "pr", "view", "12", "--repo", "alice/project", "--json", "number"})
+	err := rootCmd.Execute()
+	if err == nil || stdout.Len() != 0 {
+		t.Fatalf("error = %v, stdout = %s; expected missing PR failure", err, stdout.String())
+	}
+}
+func TestPRViewCollectsAllPagesOfSelectedCollections(t *testing.T) {
+	resetPRCLIState(t)
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/repos/alice/project/pulls/12":
+			fmt.Fprint(w, `{"number":12,"title":"all pages","state":"open"}`)
+		case r.URL.Path == "/api/v1/repos/alice/project/pulls/12/files":
+			writePRViewPage(w, r, func(i int) string {
+				return fmt.Sprintf(`{"filename":"file-%d","status":"modified","additions":1,"deletions":2}`, i)
+			})
+		case r.URL.Path == "/api/v1/repos/alice/project/issues/12/comments":
+			writePRViewPage(w, r, func(i int) string {
+				return fmt.Sprintf(`{"id":%d,"body":"comment-%d"}`, i+1, i+1)
+			})
+		case r.URL.Path == "/api/v1/repos/alice/project/pulls/12/reviews":
+			writePRViewPage(w, r, func(i int) string {
+				return fmt.Sprintf(`{"id":%d,"body":"review-%d","state":"APPROVED"}`, i+1, i+1)
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	var stdout strings.Builder
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"--config", prTestConfig(t, server), "pr", "view", "12", "--repo", "alice/project", "--json", "files,comments,reviews"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"path": "file-100"`, `"previousPath": null`, `"body": "comment-101"`, `"body": "review-101"`, `"author": null`, `"createdAt": null`, `"updatedAt": null`, `"url": null`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("JSON missing last-page value %q", want)
+		}
+	}
+}
+
+func writePRViewPage(w http.ResponseWriter, r *http.Request, item func(int) string) {
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	start := (page - 1) * 50
+	count := 50
+	if start >= 100 {
+		count = 1
+	}
+	rows := make([]string, count)
+	for i := range rows {
+		rows[i] = item(start + i)
+	}
+	fmt.Fprintf(w, "[%s]", strings.Join(rows, ","))
+}
+
+func TestPRViewReviewCommentsAreFetchedOncePerReview(t *testing.T) {
+	resetPRCLIState(t)
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.URL.RequestURI())
+		switch r.URL.Path {
+		case "/api/v1/repos/alice/project/pulls/12":
+			fmt.Fprint(w, `{"number":12,"title":"inline","state":"open"}`)
+		case "/api/v1/repos/alice/project/pulls/12/reviews":
+			fmt.Fprint(w, `[{"id":9},{"id":10}]`)
+		case "/api/v1/repos/alice/project/pulls/12/reviews/9/comments":
+			fmt.Fprint(w, `[{"id":91,"pull_request_review_id":9,"body":"first inline","position":4}]`)
+		case "/api/v1/repos/alice/project/pulls/12/reviews/10/comments":
+			fmt.Fprint(w, `[{"id":101,"pull_request_review_id":10,"body":"second inline","position":5}]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	var stdout strings.Builder
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"--config", prTestConfig(t, server), "pr", "view", "12", "--repo", "alice/project", "--json", "reviewComments"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"first inline", "second inline", `"reviewId": 9`, `"reviewId": 10`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("JSON missing %q: %s", want, stdout.String())
+		}
+	}
+	if len(requests) != 4 || strings.Contains(requests[2], "?") || strings.Contains(requests[3], "?") {
+		t.Fatalf("review-comment requests = %v; want one unpaged request per review", requests)
+	}
+}
+
+func TestPRViewLaterCollectionPageFailureWritesNoJSON(t *testing.T) {
+	resetPRCLIState(t)
+	oldSilenceUsage, oldSilenceErrors := rootCmd.SilenceUsage, rootCmd.SilenceErrors
+	rootCmd.SilenceUsage, rootCmd.SilenceErrors = true, true
+	t.Cleanup(func() { rootCmd.SilenceUsage, rootCmd.SilenceErrors = oldSilenceUsage, oldSilenceErrors })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/repos/alice/project/pulls/12" {
+			fmt.Fprint(w, `{"number":12,"title":"partial","state":"open"}`)
+			return
+		}
+		if r.URL.Query().Get("page") == "1" {
+			rows := make([]string, 50)
+			for i := range rows {
+				rows[i] = fmt.Sprintf(`{"filename":"file-%d","status":"modified","additions":1,"deletions":0}`, i)
+			}
+			fmt.Fprintf(w, "[%s]", strings.Join(rows, ","))
+			return
+		}
+		http.Error(w, "second page failed", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	var stdout strings.Builder
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"--config", prTestConfig(t, server), "pr", "view", "12", "--repo", "alice/project", "--json", "number,files"})
+	err := rootCmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "second page failed") || stdout.Len() != 0 {
+		t.Fatalf("error = %v, stdout = %s; expected atomic failure", err, stdout.String())
+	}
+}
+func TestPRViewPreservesMaxInt64AndProjectsMissingData(t *testing.T) {
+	resetPRCLIState(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/repos/alice/project/pulls/9223372036854775807" {
+			fmt.Fprint(w, `{"number":9223372036854775807,"title":"missing","state":"open"}`)
+			return
+		}
+		fmt.Fprint(w, `[]`)
+	}))
+	defer server.Close()
+	var stdout strings.Builder
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"--config", prTestConfig(t, server), "pr", "view", "9223372036854775807", "--repo", "alice/project", "--json", "number,isDraft,url,createdAt,updatedAt,closedAt,author.login,labels[].name,baseRefName,headRefName,merged,mergedAt,mergeable,files"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`9223372036854775807`, `"isDraft": null`, `"url": null`, `"createdAt": null`, `"updatedAt": null`, `"closedAt": null`, `"author": null`, `"labels": []`, `"baseRefName": null`, `"headRefName": null`, `"merged": false`, `"mergedAt": null`, `"mergeable": null`, `"files": []`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("JSON missing %q: %s", want, stdout.String())
+		}
+	}
+}
+
+func TestPRViewRejectsUnknownFieldsBeforeRequest(t *testing.T) {
+	resetPRCLIState(t)
+	rootCmd.SetArgs([]string{"pr", "view", "1", "--repo", "alice/project", "--json", "files,unexpected"})
+	err := rootCmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), `unknown JSON field "unexpected"`) {
+		t.Fatalf("error = %v", err)
 	}
 }

@@ -20,13 +20,13 @@ func resetPRCLIState(t *testing.T) {
 		rootCmd.SetArgs(nil)
 		rootCmd.SetOut(os.Stdout)
 		rootCmd.SetErr(os.Stderr)
-		for _, command := range []*cobra.Command{rootCmd, prCmd, prListCmd} {
+		for _, command := range []*cobra.Command{rootCmd, prCmd, prListCmd, prViewCmd} {
 			command.Flags().VisitAll(func(flag *pflag.Flag) { flag.Changed = false })
 		}
 		rootCmd.PersistentFlags().VisitAll(func(flag *pflag.Flag) { flag.Changed = false })
 		configFlag, useFlag, repoFlag = "", "", ""
 		debugFlag = false
-		prListState, prListAuthor, prListLabels, prListLimit, prListJSON = "open", "", nil, 30, ""
+		prListState, prListAuthor, prListLabels, prListLimit, prListJSON, prViewJSON = "open", "", nil, 30, "", ""
 	}
 	reset()
 	t.Cleanup(reset)
