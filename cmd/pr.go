@@ -321,44 +321,26 @@ func projectPRFields(pr *prListItem, fields []string) map[string]any {
 	}
 	return projected
 }
+
 type prViewItem struct {
-	Number    int64      `json:"number"`
-	Title     string     `json:"title"`
-	State     string     `json:"state"`
-	Merged    bool       `json:"merged"`
-	Draft     *bool      `json:"draft"`
-	URL       *string    `json:"html_url"`
-	Created   *time.Time `json:"created_at"`
-	Updated   *time.Time `json:"updated_at"`
+	prListItem
 	Closed    *time.Time `json:"closed_at"`
 	MergedAt  *time.Time `json:"merged_at"`
 	Body      string     `json:"body"`
 	Mergeable *bool      `json:"mergeable"`
-	Author    *struct {
-		Login string `json:"login"`
-	} `json:"user"`
-	Labels []struct {
-		Name string `json:"name"`
-	} `json:"labels"`
-	Base *struct {
-		Ref *string `json:"ref"`
-	} `json:"base"`
-	Head *struct {
-		Ref *string `json:"ref"`
-	} `json:"head"`
 }
 
 type prViewFile struct {
-	Path         string `json:"filename"`
+	Path         string  `json:"filename"`
 	PreviousPath *string `json:"previous_filename"`
-	Status       string `json:"status"`
-	Additions    int64  `json:"additions"`
-	Deletions    int64  `json:"deletions"`
+	Status       string  `json:"status"`
+	Additions    int64   `json:"additions"`
+	Deletions    int64   `json:"deletions"`
 }
 
 type prViewComment struct {
-	ID      int64      `json:"id"`
-	Author  *struct {
+	ID     int64 `json:"id"`
+	Author *struct {
 		Login string `json:"login"`
 	} `json:"user"`
 	Body    string     `json:"body"`
@@ -368,24 +350,24 @@ type prViewComment struct {
 }
 
 type prViewReview struct {
-	ID         int64      `json:"id"`
-	Author     *struct {
+	ID     int64 `json:"id"`
+	Author *struct {
 		Login string `json:"login"`
 	} `json:"user"`
-	Body       string     `json:"body"`
-	State      string     `json:"state"`
-	Submitted  *time.Time `json:"submitted_at"`
-	CommitOID  *string    `json:"commit_id"`
-	URL        *string    `json:"html_url"`
-	Stale      bool       `json:"stale"`
-	Official   bool       `json:"official"`
-	Dismissed  bool       `json:"dismissed"`
+	Body      string     `json:"body"`
+	State     string     `json:"state"`
+	Submitted *time.Time `json:"submitted_at"`
+	CommitOID *string    `json:"commit_id"`
+	URL       *string    `json:"html_url"`
+	Stale     bool       `json:"stale"`
+	Official  bool       `json:"official"`
+	Dismissed bool       `json:"dismissed"`
 }
 
 type prViewReviewComment struct {
-	ID              int64      `json:"id"`
-	ReviewID         int64      `json:"pull_request_review_id"`
-	Author          *struct {
+	ID       int64 `json:"id"`
+	ReviewID int64 `json:"pull_request_review_id"`
+	Author   *struct {
 		Login string `json:"login"`
 	} `json:"user"`
 	Body             string     `json:"body"`
@@ -531,45 +513,18 @@ func prViewAuthor(author *struct {
 }
 
 func projectPRViewFields(pr *prViewItem, fields []string) map[string]any {
-	out := make(map[string]any, len(fields))
+	common := make([]string, 0, len(fields))
 	for _, field := range fields {
 		switch field {
-		case "number":
-			out[field] = pr.Number
-		case "title":
-			out[field] = pr.Title
-		case "state":
-			out[field] = prNormalizedState(&prListItem{State: pr.State, Merged: pr.Merged})
-		case "isDraft":
-			out[field] = pr.Draft
-		case "url":
-			out[field] = pr.URL
-		case "createdAt":
-			out[field] = pr.Created
-		case "updatedAt":
-			out[field] = pr.Updated
+		case "number", "title", "state", "isDraft", "url", "createdAt", "updatedAt", "author.login", "labels[].name", "baseRefName", "headRefName":
+			common = append(common, field)
+		}
+	}
+	out := projectPRFields(&pr.prListItem, common)
+	for _, field := range fields {
+		switch field {
 		case "closedAt":
 			out[field] = pr.Closed
-		case "author.login":
-			out["author"] = prViewAuthor(pr.Author)
-		case "labels[].name":
-			labels := make([]map[string]string, 0, len(pr.Labels))
-			for _, label := range pr.Labels {
-				labels = append(labels, map[string]string{"name": label.Name})
-			}
-			out["labels"] = labels
-		case "baseRefName":
-			if pr.Base == nil {
-				out[field] = nil
-			} else {
-				out[field] = pr.Base.Ref
-			}
-		case "headRefName":
-			if pr.Head == nil {
-				out[field] = nil
-			} else {
-				out[field] = pr.Head.Ref
-			}
 		case "body":
 			out[field] = pr.Body
 		case "merged":
@@ -612,18 +567,47 @@ func prViewPages[T any](client *http.Client, token, endpoint string) ([]T, error
 			return nil, fmt.Errorf("decode response: %w", err)
 		}
 		all = append(all, items...)
-		if len(items) == 0 || len(items) < pageSize {
+		nextPage, hasNext := prViewNextPage(response.Header.Values("Link"), endpoint, page)
+		if hasNext {
+			page = nextPage
+			continue
+		}
+		if len(items) < pageSize {
 			break
 		}
-		nextPage, hasNext := prNextPage(response.Header.Values("Link"))
-		if hasNext {
-			if nextPage <= page {
-				return nil, fmt.Errorf("invalid next page %d after page %d", nextPage, page)
-			}
-			page = nextPage
-		} else {
-			page++
-		}
+		page++
 	}
 	return all, nil
+}
+
+func prViewNextPage(headers []string, endpoint string, currentPage int) (int, bool) {
+	base, err := url.Parse(endpoint)
+	if err != nil {
+		return 0, false
+	}
+	for _, header := range headers {
+		for _, link := range strings.Split(header, ",") {
+			open, close := strings.IndexByte(link, '<'), strings.IndexByte(link, '>')
+			if open < 0 || close <= open {
+				continue
+			}
+			params := link[close+1:]
+			if !strings.Contains(params, `rel="next"`) && !strings.Contains(params, "rel=next") {
+				continue
+			}
+			target, err := base.Parse(link[open+1 : close])
+			if err != nil || target.Scheme != base.Scheme || target.Host != base.Host || target.Path != base.Path {
+				continue
+			}
+			query := target.Query()
+			if len(query["page"]) != 1 {
+				continue
+			}
+			page, err := strconv.Atoi(query.Get("page"))
+			if err == nil && page > currentPage {
+				return page, true
+			}
+		}
+	}
+	return 0, false
 }

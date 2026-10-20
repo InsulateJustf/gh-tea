@@ -255,13 +255,17 @@ func TestPRViewProjectsSelectedFieldsWithoutFetchingUnselectedCollections(t *tes
 func TestPRViewDoesNotTreatIssueAsPullRequest(t *testing.T) {
 	resetPRCLIState(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/version" {
+		switch r.URL.Path {
+		case "/api/v1/version":
 			fmt.Fprint(w, `{"version":"1.22.0"}`)
-			return
+		case "/api/v1/repos/alice/project/issues/12":
+			fmt.Fprint(w, `{"number":12,"title":"ordinary issue","state":"open"}`)
+		case "/api/v1/repos/alice/project/pulls/12":
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
 		}
-		http.NotFound(w, r)
 	}))
-	defer server.Close()
 	var stdout strings.Builder
 	oldSilenceUsage, oldSilenceErrors := rootCmd.SilenceUsage, rootCmd.SilenceErrors
 	rootCmd.SilenceUsage, rootCmd.SilenceErrors = true, true
@@ -310,6 +314,83 @@ func TestPRViewCollectsAllPagesOfSelectedCollections(t *testing.T) {
 	}
 }
 
+func TestPRViewFollowsShortPagesAndUsesNextPageReviewIDs(t *testing.T) {
+	resetPRCLIState(t)
+	requests := make([]string, 0)
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.URL.RequestURI())
+		switch r.URL.Path {
+		case "/api/v1/repos/alice/project/pulls/12":
+			fmt.Fprint(w, `{"number":12,"state":"open"}`)
+		case "/api/v1/repos/alice/project/pulls/12/reviews":
+			if r.URL.Query().Get("page") == "1" {
+				w.Header().Set("Link", `<`+server.URL+`/api/v1/repos/alice/project/pulls/12/reviews?limit=50&page=2>; rel="next"`)
+				fmt.Fprint(w, `[{"id":91}]`)
+			} else {
+				fmt.Fprint(w, `[{"id":9223372036854775807}]`)
+			}
+		case "/api/v1/repos/alice/project/pulls/12/reviews/91/comments":
+			fmt.Fprint(w, `[{"id":9223372036854775807,"pull_request_review_id":91,"body":"later review inline"}]`)
+		case "/api/v1/repos/alice/project/pulls/12/reviews/9223372036854775807/comments":
+			fmt.Fprint(w, `[]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	var stdout strings.Builder
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"--config", prTestConfig(t, server), "pr", "view", "12", "--repo", "alice/project", "--json", "reviews,reviewComments"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`9223372036854775807`, `"body": "later review inline"`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("JSON missing %q: %s", want, stdout.String())
+		}
+	}
+	if !containsRequest(requests, "page=2") {
+		t.Fatalf("requests = %v; expected next review page", requests)
+	}
+}
+
+func TestPRViewShortPageNextFailureWritesNoJSON(t *testing.T) {
+	resetPRCLIState(t)
+	oldSilenceUsage, oldSilenceErrors := rootCmd.SilenceUsage, rootCmd.SilenceErrors
+	rootCmd.SilenceUsage, rootCmd.SilenceErrors = true, true
+	t.Cleanup(func() { rootCmd.SilenceUsage, rootCmd.SilenceErrors = oldSilenceUsage, oldSilenceErrors })
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/repos/alice/project/pulls/12" {
+			fmt.Fprint(w, `{"number":12,"state":"open"}`)
+			return
+		}
+		if r.URL.Query().Get("page") == "1" {
+			w.Header().Set("Link", `<`+server.URL+`/api/v1/repos/alice/project/pulls/12/files?limit=50&page=2>; rel="next"`)
+			fmt.Fprint(w, `[{"filename":"first","status":"modified","additions":1,"deletions":0}]`)
+			return
+		}
+		http.Error(w, "second page failed", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	var stdout strings.Builder
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"--config", prTestConfig(t, server), "pr", "view", "12", "--repo", "alice/project", "--json", "files"})
+	err := rootCmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "second page failed") || stdout.Len() != 0 {
+		t.Fatalf("error = %v, stdout = %s; expected atomic failure", err, stdout.String())
+	}
+}
+
+func containsRequest(requests []string, fragment string) bool {
+	for _, request := range requests {
+		if strings.Contains(request, fragment) {
+			return true
+		}
+	}
+	return false
+}
 func writePRViewPage(w http.ResponseWriter, r *http.Request, item func(int) string) {
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	start := (page - 1) * 50
@@ -408,6 +489,62 @@ func TestPRViewPreservesMaxInt64AndProjectsMissingData(t *testing.T) {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("JSON missing %q: %s", want, stdout.String())
 		}
+	}
+}
+func TestPRViewPreservesMaxInt64InDiscussionAndReviewIDs(t *testing.T) {
+	resetPRCLIState(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/repos/alice/project/pulls/9223372036854775807":
+			fmt.Fprint(w, `{"number":9223372036854775807,"state":"open"}`)
+		case "/api/v1/repos/alice/project/issues/9223372036854775807/comments":
+			fmt.Fprint(w, `[{"id":9223372036854775807}]`)
+		case "/api/v1/repos/alice/project/pulls/9223372036854775807/reviews":
+			fmt.Fprint(w, `[{"id":9223372036854775807}]`)
+		case "/api/v1/repos/alice/project/pulls/9223372036854775807/reviews/9223372036854775807/comments":
+			fmt.Fprint(w, `[{"id":9223372036854775807,"pull_request_review_id":9223372036854775807}]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	var stdout strings.Builder
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"--config", prTestConfig(t, server), "pr", "view", "9223372036854775807", "--repo", "alice/project", "--json", "number,comments,reviews,reviewComments"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(stdout.String(), "9223372036854775807") != 5 {
+		t.Fatalf("maximum IDs were not preserved: %s", stdout.String())
+	}
+}
+
+func TestPRViewLaterReviewInlineFailureWritesNoJSON(t *testing.T) {
+	resetPRCLIState(t)
+	oldSilenceUsage, oldSilenceErrors := rootCmd.SilenceUsage, rootCmd.SilenceErrors
+	rootCmd.SilenceUsage, rootCmd.SilenceErrors = true, true
+	t.Cleanup(func() { rootCmd.SilenceUsage, rootCmd.SilenceErrors = oldSilenceUsage, oldSilenceErrors })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/repos/alice/project/pulls/12":
+			fmt.Fprint(w, `{"number":12,"state":"open"}`)
+		case "/api/v1/repos/alice/project/pulls/12/reviews":
+			fmt.Fprint(w, `[{"id":1},{"id":2}]`)
+		case "/api/v1/repos/alice/project/pulls/12/reviews/1/comments":
+			fmt.Fprint(w, `[{"id":10,"pull_request_review_id":1,"body":"first inline"}]`)
+		case "/api/v1/repos/alice/project/pulls/12/reviews/2/comments":
+			http.Error(w, "later inline failed", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	var stdout strings.Builder
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"--config", prTestConfig(t, server), "pr", "view", "12", "--repo", "alice/project", "--json", "reviewComments"})
+	err := rootCmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "later inline failed") || stdout.Len() != 0 {
+		t.Fatalf("error = %v, stdout = %s; expected atomic failure", err, stdout.String())
 	}
 }
 
