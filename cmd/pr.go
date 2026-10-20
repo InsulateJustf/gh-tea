@@ -182,8 +182,8 @@ func prListRun(cmd *cobra.Command, _ []string) error {
 		}
 		nextPage, hasNext := prNextPage(links)
 		if hasNext {
-			if nextPage <= 0 {
-				break
+			if nextPage <= page {
+				return fmt.Errorf("invalid next page %d after page %d", nextPage, page)
 			}
 			page = nextPage
 			continue
@@ -275,7 +275,20 @@ func prGetJSON(client *http.Client, token, endpoint string, target any) error {
 		body, _ := io.ReadAll(response.Body)
 		return fmt.Errorf("%s: %s", response.Status, strings.TrimSpace(string(body)))
 	}
-	return json.NewDecoder(response.Body).Decode(target)
+	decoder := json.NewDecoder(response.Body)
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	// A decoded value does not prove the HTTP body arrived completely.
+	// Consume its end so transport errors and trailing data cannot look successful.
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err != nil {
+			return fmt.Errorf("finish JSON response: %w", err)
+		}
+		return fmt.Errorf("unexpected data after JSON response")
+	}
+	return nil
 }
 
 func prNormalizedState(pr *prListItem) string {

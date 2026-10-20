@@ -292,6 +292,8 @@ PR view 的集合读取优先遵循分页 `Link`；只有 `X-Total-Count` 时也
 
 PR list 的所选字段始终存在：`number` 是正 int64 JSON 整数，`title` 是字符串，`state` 根据服务端合并标志规范化为 `open` / `closed` / `merged`。`isDraft` 使用服务端 `draft` 布尔值，缺失时为 `null`，不从标题前缀推断。`url`、`createdAt` / `updatedAt`、`baseRefName` / `headRefName` 分别来自 HTML URL、RFC3339 时间、`base.ref` / `head.ref`，缺失时为 `null`。`author.login` 投影为 `author: {"login":"用户名"}` 或 `null`；`labels[].name` 投影为 `labels: [{"name":"标签"}]`，缺失标签为 `[]`。无匹配输出 `[]`。未知字段及 `files`、`comments`、`reviews`、`reviewComments` 等 view-only 字段均被拒绝。所需数据页失败时非零退出，向 stderr 报错，不输出部分成功 JSON；分页不保证事务快照。这里只提供后端 PR 列表能力，不表示消费者插件已支持。
 
+PR JSON 响应必须完整结束且只包含一个 JSON 值（允许末尾空白）；即使首个值已解码，连接提前关闭、尾随垃圾或第二个 JSON 值仍会报错。列表需要继续分页时，`next` 页码缺失、无效或不递增也会报错，不将已取得的部分列表当作成功结果。上述失败均非零退出，诊断写入 stderr，stdout 不输出成功 JSON。已发布的 `v0.7.0` 缺少这些严格检查，不能据其退出码断言这两类故障下的响应完整性。
+
 仓库 JSON 不支持 `pushedAt`：Gitea 没有提供可靠的仓库最后推送时间，CLI 请求该字段时会报错。该时间不可用不代表仓库从未推送。CLI 不会以可见活动流或提交时间代替推送时间，也不会为仓库 JSON 查询活动接口。
 
 非交互运行时：
