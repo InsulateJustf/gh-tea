@@ -126,6 +126,15 @@ gh tea pr list --state closed --limit 10 --author @me --label bug,urgent \
 
 `--state` 仅接受 `open`、`closed`、`merged`、`all`；`closed` 不包含已合并的 PR。`--author @me` 使用所选 Tea 的认证用户。`--label` 可重复，逗号分隔的所有标签均须匹配。先按状态、作者及标签筛选，再应用数量限制；匹配可跨页，结果保留服务端顺序。实例和仓库选择与 Issue 命令相同。
 
+### PR 查看
+
+```sh
+gh tea pr view 12 --use work --repo alice/demo
+gh tea pr view 12 --json number,title,state,isDraft,files,comments,reviews,reviewComments
+```
+
+`pr view` 只查询真实 Pull Request；普通 Issue、无权访问或不存在的 PR 会报错。`--json` 支持下表中的 PR view 字段，讨论集合只会在明确选择时请求。
+
 ### 仓库
 
 ```sh
@@ -258,6 +267,7 @@ gh tea repo view alice/demo --use work --json nameWithOwner,defaultBranchRef.nam
 | Issue list | `number`, `title`, `state`, `url`, `createdAt`, `updatedAt`, `closedAt`, `author.login`, `labels[].name`, `assignees[].login`, `milestone.title`, `body` |
 | Issue view | Issue list 字段，以及 `isPullRequest`（布尔值；由 Gitea 的 PR 元信息判定，不依赖 URL）和 `comments` |
 | PR list | `number`, `title`, `state`, `isDraft`, `url`, `createdAt`, `updatedAt`, `author.login`, `labels[].name`, `baseRefName`, `headRefName` |
+| PR view | PR list 字段，以及 `closedAt`, `body`, `merged`, `mergedAt`, `mergeable`, `files`, `comments`, `reviews`, `reviewComments` |
 | 仓库 | `name`, `nameWithOwner`, `description`, `visibility`, `isPrivate`, `url`, `updatedAt`, `defaultBranchRef.name` |
 
 `isPullRequest` 仅支持 `issue view`，不支持 `issue list`。未在 `view --json` 中选择该字段时，输出会省略它。gh-tea v0.5.0 不提供此字段；满足消费者契约的最低发行版本为 [v0.6.0](https://github.com/InsulateJustf/gh-tea/releases/tag/v0.6.0)。
@@ -265,6 +275,10 @@ gh tea repo view alice/demo --use work --json nameWithOwner,defaultBranchRef.nam
 `comments` 仅支持 `issue view --json`，不支持 `issue list`。例如 `issue view 12 --json title,comments` 会在一个对象中返回标题及完整评论；评论为按服务端分页顺序排列的数组，每项结构为 `id`（整数）、`author`（`{"login":"用户名"}` 或 `null`）、`body`（原样字符串）、`createdAt` / `updatedAt`（RFC3339 字符串或 `null`）和 `url`（评论 HTML URL 或 `null`）。无评论时为 `[]`。只有 `--json` 字段表选中 `comments` 才会请求评论；`--json title --comments` 只输出标题且不请求评论。未使用 JSON 时，普通 `issue view` 不取评论，而 `issue view 12 --comments` 仍以文本显示评论。
 
 JSON view 会先取得全部选中数据再输出；任一评论页失败时命令失败、向 stderr 报错，stdout 不会包含部分评论或成功 JSON。分页顺序不代表服务端事务快照。gh-tea v0.5.0 不提供此评论 JSON 契约；满足消费者契约的最低发行版本为 [v0.6.0](https://github.com/InsulateJustf/gh-tea/releases/tag/v0.6.0)。
+
+PR list 与 PR view 的 `number` 都是正 int64 JSON 整数；PR view 的基础字段按选中字段投影，缺失数据为 `null` 或空数组。`state` 使用服务端 `merged` 标志规范为 `open` / `closed` / `merged`；`isDraft` 来自服务端 `draft`，不从标题推断；`mergeable` 仅表示服务端字段，不代表保护规则或安全合并结论。作者、标签和分支名的来源与 PR list 相同。
+
+PR view 的 `files`、`comments`、`reviews` 会完整读取所有分页，`reviewComments` 会按 review 顺序逐个读取其完整行内评论。正文不截断、不去空白，集合及每页保留服务端顺序；未选集合不会读取。评论的 `author`、时间、URL 和文件前序路径、行内评论路径/位置可为 `null`；行内评论位置不是源文件行号。任何已选集合读取失败都会非零退出并且不输出部分 JSON。通用 `comments` 是 PR 对话评论，不包括行内 review 评论。此能力只提供 CLI 后端，不表示消费者插件已支持。
 
 PR list 的所选字段始终存在：`number` 是正 int64 JSON 整数，`title` 是字符串，`state` 根据服务端合并标志规范化为 `open` / `closed` / `merged`。`isDraft` 使用服务端 `draft` 布尔值，缺失时为 `null`，不从标题前缀推断。`url`、`createdAt` / `updatedAt`、`baseRefName` / `headRefName` 分别来自 HTML URL、RFC3339 时间、`base.ref` / `head.ref`，缺失时为 `null`。`author.login` 投影为 `author: {"login":"用户名"}` 或 `null`；`labels[].name` 投影为 `labels: [{"name":"标签"}]`，缺失标签为 `[]`。无匹配输出 `[]`。未知字段及 `files`、`comments`、`reviews`、`reviewComments` 等 view-only 字段均被拒绝。所需数据页失败时非零退出，向 stderr 报错，不输出部分成功 JSON；分页不保证事务快照。这里只提供后端 PR 列表能力，不表示消费者插件已支持。
 
@@ -279,7 +293,7 @@ PR list 的所选字段始终存在：`number` 是正 int64 JSON 整数，`title
 
 ## 支持范围与排错
 
-支持 `auth`、实例管理、八个 `issue` 子命令、`pr list` 和九个 `repo` 子命令。PR view/diff/写操作、release、迁移、镜像、gist 和通用 API 透传暂不支持。`--project`、`--template/-t`、`--jq` 等未实现的 flag 会报错，不会悄悄忽略。完整参数以 `gh tea <命令> --help` 为准。
+支持 `auth`、实例管理、八个 `issue` 子命令、`pr list`、`pr view` 和九个 `repo` 子命令。PR diff/写操作、release、迁移、镜像、gist 和通用 API 透传暂不支持。`--project`、`--template/-t`、`--jq` 等未实现的 flag 会报错，不会悄悄忽略。完整参数以 `gh tea <命令> --help` 为准。
 
 全局参数：`--use`、`--repo/-R`、`--config/-c`、`--debug/-d`。
 
