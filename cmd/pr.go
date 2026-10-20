@@ -52,8 +52,8 @@ type prListItem struct {
 	Updated *time.Time `json:"updated_at"`
 	Author  *struct { Login string `json:"login"` } `json:"user"`
 	Labels  []struct { Name string `json:"name"` } `json:"labels"`
-	Base    *struct { Ref string `json:"ref"` } `json:"base"`
-	Head    *struct { Ref string `json:"ref"` } `json:"head"`
+	Base    *struct { Ref *string `json:"ref"` } `json:"base"`
+	Head    *struct { Ref *string `json:"ref"` } `json:"head"`
 }
 
 func prListRun(cmd *cobra.Command, _ []string) error {
@@ -81,17 +81,28 @@ func prListRun(cmd *cobra.Command, _ []string) error {
 		}
 		author = viewer.Login
 	}
-	items, err := prListPages(client, item.Token, endpoint)
-	if err != nil { return err }
 	labels := splitPRLabels(prListLabels)
-	matched := make([]prListItem, 0, len(items))
-	for _, pr := range items {
-		state := prNormalizedState(&pr)
-		if prListState != "all" && state != prListState { continue }
-		if author != "" && (pr.Author == nil || pr.Author.Login != author) { continue }
-		if !prHasAllLabels(&pr, labels) { continue }
-		matched = append(matched, pr)
+	matched := make([]prListItem, 0, min(prListLimit, 50))
+	for page := 1; ; {
+		items, links, err := prListPage(client, item.Token, endpoint, page)
+		if err != nil { return err }
+		for _, pr := range items {
+			state := prNormalizedState(&pr)
+			if prListState != "all" && state != prListState { continue }
+			if author != "" && (pr.Author == nil || pr.Author.Login != author) { continue }
+			if !prHasAllLabels(&pr, labels) { continue }
+			matched = append(matched, pr)
+			if len(matched) == prListLimit { break }
+		}
 		if len(matched) == prListLimit { break }
+		nextPage, hasNext := prNextPage(links)
+		if hasNext {
+			if nextPage <= 0 { break }
+			page = nextPage
+			continue
+		}
+		if len(items) < 50 { break }
+		page++
 	}
 	if prListJSON != "" {
 		rows := make([]map[string]any, 0, len(matched))
@@ -104,27 +115,40 @@ func prListRun(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-func prListPages(client *http.Client, token, endpoint string) ([]prListItem, error) {
+func prListPage(client *http.Client, token, endpoint string, page int) ([]prListItem, []string, error) {
 	const pageSize = 50
-	var all []prListItem
-	for page := 1; ; page++ {
-		requestURL := endpoint + "?state=all&limit=" + strconv.Itoa(pageSize) + "&page=" + strconv.Itoa(page)
-		request, err := http.NewRequest(http.MethodGet, requestURL, nil)
-		if err != nil { return nil, err }
-		request.Header.Set("Authorization", "token "+token)
-		response, err := client.Do(request)
-		if err != nil { return nil, fmt.Errorf("list pull requests: %w", err) }
-		body, readErr := io.ReadAll(response.Body)
-		response.Body.Close()
-		if readErr != nil { return nil, fmt.Errorf("list pull requests: %w", readErr) }
-		if response.StatusCode < 200 || response.StatusCode >= 300 {
-			return nil, fmt.Errorf("list pull requests: %s: %s", response.Status, strings.TrimSpace(string(body)))
-		}
-		var items []prListItem
-		if err := json.Unmarshal(body, &items); err != nil { return nil, fmt.Errorf("decode pull requests: %w", err) }
-		all = append(all, items...)
-		if len(items) == 0 || (len(items) < pageSize && !prHasNextPage(response.Header.Values("Link"))) { return all, nil }
+	requestURL := endpoint + "?state=all&limit=" + strconv.Itoa(pageSize) + "&page=" + strconv.Itoa(page)
+	request, err := http.NewRequest(http.MethodGet, requestURL, nil)
+	if err != nil { return nil, nil, err }
+	request.Header.Set("Authorization", "token "+token)
+	response, err := client.Do(request)
+	if err != nil { return nil, nil, fmt.Errorf("list pull requests: %w", err) }
+	body, readErr := io.ReadAll(response.Body)
+	response.Body.Close()
+	if readErr != nil { return nil, nil, fmt.Errorf("list pull requests: %w", readErr) }
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, nil, fmt.Errorf("list pull requests: %s: %s", response.Status, strings.TrimSpace(string(body)))
 	}
+	var items []prListItem
+	if err := json.Unmarshal(body, &items); err != nil { return nil, nil, fmt.Errorf("decode pull requests: %w", err) }
+	return items, response.Header.Values("Link"), nil
+}
+
+func prNextPage(headers []string) (int, bool) {
+	for _, header := range headers {
+		for _, link := range strings.Split(header, ",") {
+			open, close := strings.IndexByte(link, '<'), strings.IndexByte(link, '>')
+			if open < 0 || close <= open { continue }
+			params := link[close+1:]
+			if !strings.Contains(params, `rel="next"`) && !strings.Contains(params, "rel=next") { continue }
+			target, err := url.Parse(link[open+1:close])
+			if err != nil { return 0, true }
+			page, err := strconv.Atoi(target.Query().Get("page"))
+			if err != nil { return 0, true }
+			return page, true
+		}
+	}
+	return 0, false
 }
 
 func prGetJSON(client *http.Client, token, endpoint string, target any) error {

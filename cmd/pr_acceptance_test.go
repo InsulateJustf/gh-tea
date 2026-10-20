@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/spf13/cobra"
 )
 
 func prTestConfig(t *testing.T, server *httptest.Server) string {
@@ -99,4 +98,98 @@ func TestPRListPageFailureDoesNotWritePartialJSON(t *testing.T) {
 	if stdout.Len() != 0 { t.Fatalf("partial JSON was written: %s", stdout.String()) }
 }
 
-var _ *cobra.Command
+func TestPRListStopsAfterCollectingLimitMatches(t *testing.T) {
+	resetPRCLIState(t)
+	pages := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/version" {
+			fmt.Fprint(w, `{"version":"1.22.0"}`)
+			return
+		}
+		pages++
+		if r.URL.Query().Get("page") != "1" {
+			http.Error(w, "unexpected extra page", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Link", `<https://untrusted.invalid/api/v1/repos/elsewhere/pulls?page=2&token=leak>; rel="next"`)
+		fmt.Fprint(w, `[{"number":1,"title":"first match","state":"open"}]`)
+	}))
+	defer server.Close()
+	var stdout strings.Builder
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"--config", prTestConfig(t, server), "pr", "list", "--repo", "alice/project", "--limit", "1", "--json", "number"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if pages != 1 {
+		t.Fatalf("pull request pages fetched = %d, want 1", pages)
+	}
+	if !strings.Contains(stdout.String(), `"number": 1`) {
+		t.Fatalf("JSON = %s, want first match", stdout.String())
+	}
+}
+func TestPRListUsesLinkPageNumberOnConfiguredEndpoint(t *testing.T) {
+	resetPRCLIState(t)
+	var pages []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/version" {
+			fmt.Fprint(w, `{"version":"1.22.0"}`)
+			return
+		}
+		if r.URL.Path != "/api/v1/repos/alice/project/pulls" {
+			t.Errorf("unexpected endpoint: %s", r.URL.String())
+			return
+		}
+		pages = append(pages, r.URL.Query().Get("page"))
+		if r.Header.Get("Authorization") != "token synthetic-token" {
+			t.Errorf("Authorization = %q", r.Header.Get("Authorization"))
+		}
+		switch r.URL.Query().Get("page") {
+		case "1":
+			w.Header().Set("Link", `<https://untrusted.invalid/other?page=3&token=leak>; rel="next"`)
+			fmt.Fprint(w, `[{"number":1,"title":"not open","state":"closed"}]`)
+		case "3":
+			fmt.Fprint(w, `[{"number":3,"title":"match","state":"open"}]`)
+		default:
+			t.Errorf("unexpected page: %s", r.URL.Query().Get("page"))
+		}
+	}))
+	defer server.Close()
+	var stdout strings.Builder
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"--config", prTestConfig(t, server), "pr", "list", "--repo", "alice/project", "--limit", "1", "--json", "number"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(pages, ",") != "1,3" {
+		t.Fatalf("requested pages = %v, want [1 3]", pages)
+	}
+	if !strings.Contains(stdout.String(), `"number": 3`) {
+		t.Fatalf("JSON = %s, want page 3 match", stdout.String())
+	}
+}
+
+func TestPRListProjectsMissingNestedRefsAsNull(t *testing.T) {
+	resetPRCLIState(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/version" {
+			fmt.Fprint(w, `{"version":"1.22.0"}`)
+			return
+		}
+		fmt.Fprint(w, `[{"number":1,"title":"missing nested refs","state":"open","base":{},"head":{"ref":null}}]`)
+	}))
+	defer server.Close()
+	var stdout strings.Builder
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"--config", prTestConfig(t, server), "pr", "list", "--repo", "alice/project", "--json", "baseRefName,headRefName"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"baseRefName": null`, `"headRefName": null`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("JSON missing %q: %s", want, stdout.String())
+		}
+	}
+}
+
+
